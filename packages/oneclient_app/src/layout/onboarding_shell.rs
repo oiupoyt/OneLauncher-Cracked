@@ -1,0 +1,130 @@
+use std::collections::HashSet;
+
+use freya::prelude::*;
+use freya::router::{Outlet, use_route};
+
+use crate::Route;
+use crate::components::OnboardingNavbar;
+use crate::hooks::{
+    OnboardingSelectionState, has_migration_data, onboarding_bundles_items, use_migration,
+    use_onboarding_bundles, use_provide_onboarding_selection,
+};
+use crate::theme::colors;
+use crate::view::onboarding::{
+    LoadingBackdrop, default_selection, onboarding_step_index, onboarding_total,
+};
+
+#[derive(PartialEq)]
+pub struct OnboardingShell;
+
+impl Component for OnboardingShell {
+    fn render(&self) -> impl IntoElement {
+        let mut selected = use_state(HashSet::new);
+        let user_touched = use_state(|| false);
+        let migrated_categories = use_state(|| None::<Vec<String>>);
+        let language = use_state(|| "English".to_string());
+        let reduce_motion = use_state(|| false);
+        let predownload = use_state(|| true);
+        let setup_started = use_state(|| false);
+        let import_folder = use_state(|| None::<String>);
+        let import_dedicated = use_state(|| false);
+        use_provide_onboarding_selection(OnboardingSelectionState {
+            selected,
+            user_touched,
+            migrated_categories,
+            language,
+            reduce_motion,
+            predownload,
+            setup_started,
+            import_folder,
+            import_dedicated,
+        });
+
+        let migration_query = use_migration();
+        let detected_migration = has_migration_data(&migration_query);
+
+        let route = use_route::<Route>();
+        let step_index = onboarding_step_index(&route, detected_migration);
+
+        let bundles = use_onboarding_bundles();
+
+        use_side_effect(move || {
+            if *user_touched.peek() {
+                return;
+            }
+            let Some(items) = onboarding_bundles_items(&bundles) else {
+                return;
+            };
+            let categories = migrated_categories.read().clone();
+            let defaults = default_selection(&items, categories.as_deref());
+            if *selected.peek() != defaults {
+                selected.set(defaults);
+            }
+        });
+        let show_backdrop =
+            matches!(&route, Route::OnboardingDownloading {}) && *setup_started.read();
+        let backdrop = show_backdrop.then(|| {
+            let clusters = onboarding_bundles_items(&bundles)
+                .map(|items| items.into_iter().map(|cb| cb.cluster).collect())
+                .unwrap_or_default();
+            LoadingBackdrop { clusters }.into_element()
+        });
+
+        rect()
+            .vertical()
+            .width(Size::fill())
+            .height(Size::fill())
+            .background(colors::page())
+            .color(colors::fg_primary())
+            .overflow(Overflow::Clip)
+            .maybe_child(backdrop)
+            .child(
+                rect()
+                    .vertical()
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .content(Content::Flex)
+                    .layer(Layer::Relative(30))
+                    .child(progress_bar(
+                        step_index,
+                        onboarding_total(detected_migration),
+                    ))
+                    .child(OnboardingNavbar)
+                    .child(
+                        rect()
+                            .width(Size::fill())
+                            .height(Size::flex(1.0))
+                            .overflow(Overflow::Clip)
+                            .child(Outlet::<Route>::new())
+                            .child(copyright()),
+                    ),
+            )
+    }
+}
+
+fn progress_bar(step_index: usize, total: usize) -> impl IntoElement {
+    let filled = ((step_index + 1) as f32 / total as f32) * 100.;
+
+    rect()
+        .width(Size::fill())
+        .height(Size::px(3.))
+        .background(Color::WHITE.with_a(28))
+        .child(
+            rect()
+                .width(Size::percent(filled))
+                .height(Size::fill())
+                .background(colors::brand()),
+        )
+}
+
+fn copyright() -> impl IntoElement {
+    rect()
+        .position(Position::new_absolute().bottom(16.).left(24.))
+        .interactive(false)
+        .child(
+            label()
+                .text("Design © 2026 Polyfrost. All rights reserved.")
+                .font_size(11.)
+                .color(colors::fg_secondary()),
+        )
+}

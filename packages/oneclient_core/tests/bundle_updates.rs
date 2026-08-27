@@ -1,0 +1,396 @@
+use oneclient_common::domain::{ContentType, GameLoader, ProviderId};
+use oneclient_content::bundles::{
+    BundleFile, BundleFileKind, BundleManifest, check_bundle_updates,
+};
+use oneclient_core::LauncherState;
+use oneclient_core::clusters::CreateClusterOptions;
+use oneclient_db::dao::{artifact as artifact_dao, cluster_bundle as bundle_dao};
+use oneclient_db::models::OverrideType;
+
+const BUNDLE: &str = "Test Bundle";
+const MC_VERSION: &str = "1.21.1";
+const PROJECT_ID: &str = "sodium";
+const VERSION_ID: &str = "v1";
+const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn managed_file(enabled: bool) -> BundleFile {
+    BundleFile {
+        enabled,
+        hidden: false,
+        path: "mods/sodium.jar".to_string(),
+        size: 1,
+        kind: BundleFileKind::Managed {
+            provider: ProviderId::Modrinth,
+            project_id: PROJECT_ID.to_string(),
+            version_id: VERSION_ID.to_string(),
+            sha1: HASH.to_string(),
+        },
+    }
+}
+
+/// Added by the catalog after the last sync untracked so it has no override
+fn newly_shipped_file() -> BundleFile {
+    BundleFile {
+        enabled: true,
+        hidden: false,
+        path: "mods/newcomer.jar".to_string(),
+        size: 1,
+        kind: BundleFileKind::Managed {
+            provider: ProviderId::Modrinth,
+            project_id: "newcomer".to_string(),
+            version_id: "v1".to_string(),
+            sha1: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+        },
+    }
+}
+
+fn manifest(files: Vec<BundleFile>) -> BundleManifest {
+    BundleManifest {
+        name: BUNDLE.to_string(),
+        version_id: "1".to_string(),
+        category: "test".to_string(),
+        mc_version: MC_VERSION.to_string(),
+        loader: GameLoader::Fabric,
+        loader_version: "0.16.0".to_string(),
+        enabled: true,
+        files,
+    }
+}
+
+async fn cluster_with_tracked_mod(state: &LauncherState) -> i64 {
+    let global = state.settings.read().global_game_settings.clone();
+    let cluster = state
+        .clusters
+        .create(
+            &global,
+            CreateClusterOptions::new("Bundle Cluster", MC_VERSION, GameLoader::Fabric),
+        )
+        .await
+        .unwrap();
+
+    artifact_dao::insert_artifact(
+        &state.services.db,
+        HASH,
+        ContentType::Mod as i64,
+        "artifacts/sodium.jar",
+        "sodium.jar",
+        Some(1),
+    )
+    .await
+    .unwrap();
+
+    artifact_dao::link_cluster_artifact(&state.services.db, cluster.id, HASH, "sodium.jar")
+        .await
+        .unwrap();
+
+    artifact_dao::upsert_provider_release(
+        &state.services.db,
+        ProviderId::Modrinth as i64,
+        PROJECT_ID,
+        VERSION_ID,
+        HASH,
+        "Sodium",
+        "1.0.0",
+        None,
+        MC_VERSION,
+        "fabric",
+    )
+    .await
+    .unwrap();
+
+    bundle_dao::track_bundle_artifact(
+        &state.services.db,
+        cluster.id,
+        HASH,
+        BUNDLE,
+        VERSION_ID,
+        PROJECT_ID,
+    )
+    .await
+    .unwrap();
+
+    cluster.id
+}
+
+#[tokio::test]
+async fn mod_still_in_manifest_is_not_removed() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(&state, manifest(vec![managed_file(true)]))
+        .await
+        .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        check.removals_available.is_empty(),
+        "an unchanged tracked mod was flagged for removal: {:?}",
+        check.removals_available
+    );
+    assert!(check.updates_available.is_empty());
+}
+
+#[tokio::test]
+async fn mod_dropped_from_manifest_is_removed() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(&state, manifest(vec![]))
+        .await
+        .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        check.removals_available.len(),
+        1,
+        "a mod the bundle no longer ships should be removed"
+    );
+    assert_eq!(check.removals_available[0].package_id, PROJECT_ID);
+}
+
+#[tokio::test]
+async fn disabled_mod_dropped_from_manifest_is_still_removed() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(&state, manifest(vec![]))
+        .await
+        .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    artifact_dao::update_cluster_artifact(&state.services.db, cluster_id, HASH, "sodium.jar", 0)
+        .await
+        .unwrap();
+    bundle_dao::save_override(
+        &state.services.db,
+        cluster_id,
+        BUNDLE,
+        PROJECT_ID,
+        OverrideType::Disabled,
+    )
+    .await
+    .unwrap();
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        check.removals_available.len(),
+        1,
+        "a disabled mod the bundle no longer ships should still be removed"
+    );
+}
+
+#[tokio::test]
+async fn user_disabled_mod_is_not_treated_as_a_removal() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(&state, manifest(vec![managed_file(true)]))
+        .await
+        .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    artifact_dao::update_cluster_artifact(&state.services.db, cluster_id, HASH, "sodium.jar", 0)
+        .await
+        .unwrap();
+    bundle_dao::save_override(
+        &state.services.db,
+        cluster_id,
+        BUNDLE,
+        PROJECT_ID,
+        OverrideType::Disabled,
+    )
+    .await
+    .unwrap();
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        check.removals_available.is_empty(),
+        "a user-disabled mod is still shipped by the bundle and must not be removed: {:?}",
+        check.removals_available
+    );
+}
+
+#[tokio::test]
+async fn live_bundle_takes_on_new_catalog_files() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(
+        &state,
+        manifest(vec![managed_file(true), newly_shipped_file()]),
+    )
+    .await
+    .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        check.additions_available.len(),
+        1,
+        "a bundle the user still has enabled should pick up newly shipped files"
+    );
+    assert_eq!(
+        check.additions_available[0].new_file.kind.package_id(),
+        "newcomer"
+    );
+}
+
+#[tokio::test]
+async fn emptied_bundle_does_not_take_on_new_catalog_files() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(
+        &state,
+        manifest(vec![managed_file(true), newly_shipped_file()]),
+    )
+    .await
+    .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    // Disabling everything is how you opt out
+    // The newcomer lacks an override only
+    // because it did not exist yet that absence must not read as consent
+    artifact_dao::update_cluster_artifact(&state.services.db, cluster_id, HASH, "sodium.jar", 0)
+        .await
+        .unwrap();
+    bundle_dao::save_override(
+        &state.services.db,
+        cluster_id,
+        BUNDLE,
+        PROJECT_ID,
+        OverrideType::Disabled,
+    )
+    .await
+    .unwrap();
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        check.additions_available.is_empty(),
+        "a bundle whose content the user disabled must not reinstate itself: {:?}",
+        check
+            .additions_available
+            .iter()
+            .map(|a| a.new_file.kind.package_id())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn removed_bundle_content_does_not_take_on_new_catalog_files() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(
+        &state,
+        manifest(vec![managed_file(true), newly_shipped_file()]),
+    )
+    .await
+    .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    oneclient_content::bundles::remove_artifact_from_cluster(
+        cluster_id,
+        HASH,
+        true,
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        check.additions_available.is_empty(),
+        "a bundle the user emptied by removal must not reinstate itself: {:?}",
+        check
+            .additions_available
+            .iter()
+            .map(|a| a.new_file.kind.package_id())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn opting_a_single_file_in_keeps_the_bundle_live() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    oneclient_core::dev::seed_bundle_archive(
+        &state,
+        manifest(vec![managed_file(true), newly_shipped_file()]),
+    )
+    .await
+    .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    artifact_dao::update_cluster_artifact(&state.services.db, cluster_id, HASH, "sodium.jar", 0)
+        .await
+        .unwrap();
+    bundle_dao::save_override(
+        &state.services.db,
+        cluster_id,
+        BUNDLE,
+        PROJECT_ID,
+        OverrideType::Disabled,
+    )
+    .await
+    .unwrap();
+    bundle_dao::save_override(
+        &state.services.db,
+        cluster_id,
+        BUNDLE,
+        "newcomer",
+        OverrideType::Enabled,
+    )
+    .await
+    .unwrap();
+
+    let check = check_bundle_updates(
+        cluster_id,
+        state.bundles.as_ref(),
+        &state.services.content(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        check.additions_available.len(),
+        1,
+        "an explicit opt-in is consent, even with the rest of the bundle disabled"
+    );
+}

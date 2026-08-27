@@ -1,0 +1,75 @@
+use parking_lot::RwLock;
+
+use crate::{LauncherError, LauncherResult};
+use oneclient_common::paths;
+use oneclient_events::EventBus;
+
+use super::launcher::LauncherSettings;
+use oneclient_cluster::GameSettingsProfile;
+
+#[tracing::instrument(level = "debug", skip(notify))]
+pub async fn load_settings(notify: Option<&EventBus>) -> LauncherSettings {
+    match async {
+        let path = paths::settings_file()?;
+        let exists = polyio::try_exists(&path).await?;
+
+        Ok::<LauncherSettings, LauncherError>(if !exists {
+            LauncherSettings::default()
+        } else {
+            let data = polyio::read(&path).await?;
+            serde_json::from_slice(&data)?
+        })
+    }
+    .await
+    {
+        Ok(settings) => settings,
+        Err(err) => {
+            tracing::warn!("failed to read settings file: {err}");
+
+            if let Some(notify) = notify {
+                notify
+                    .notify("Settings")
+                    .body("Failed to load settings")
+                    .error()
+                    .send();
+            }
+
+            LauncherSettings::default()
+        }
+    }
+}
+
+/// Prefer [`save_settings_and_apply`] this leaves the HTTP client on its old
+/// endpoints/keys so those changes only take effect on the next launch
+#[tracing::instrument(level = "debug", skip(settings))]
+pub async fn save_settings(settings: &LauncherSettings) -> LauncherResult<()> {
+    let path = paths::settings_file()?;
+
+    let data = serde_json::to_string_pretty(settings)?;
+    polyio::write_atomic(path, data).await?;
+    Ok(())
+}
+
+#[tracing::instrument(level = "debug", skip(services, settings))]
+pub async fn save_settings_and_apply(
+    services: &crate::LauncherServices,
+    settings: &LauncherSettings,
+) -> LauncherResult<()> {
+    save_settings(settings).await?;
+    services.requester.set_config(super::net_config(settings));
+    Ok(())
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn save_global_profile(
+    settings: &RwLock<LauncherSettings>,
+    global: GameSettingsProfile,
+) -> LauncherResult<()> {
+    {
+        let mut lock = settings.write();
+        lock.global_game_settings = global;
+    }
+
+    let snapshot = settings.read().clone();
+    save_settings(&snapshot).await
+}

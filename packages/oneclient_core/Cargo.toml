@@ -1,0 +1,95 @@
+[package]
+authors.workspace = true
+description = "OneClient launcher core"
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+name = "oneclient_core"
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dev-dependencies]
+async-tungstenite = {version = "=0.32.1", features = ["tokio-runtime"]}
+polyio = {workspace = true, features = ["testing"]}
+
+[dependencies]
+# core (extra)
+discord-rich-presence.workspace = true
+interfrost.workspace = true
+oneclient_auth.workspace = true
+oneclient_cluster.workspace = true
+oneclient_common.workspace = true
+oneclient_content.workspace = true
+oneclient_db.workspace = true
+oneclient_discord.workspace = true
+oneclient_events.workspace = true
+oneclient_java.workspace = true
+oneclient_mc.workspace = true
+oneclient_net.workspace = true
+oneclient_polyplus.workspace = true
+polyio.workspace = true
+
+# logging
+tracing-futures.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true
+
+sentry-tracing.workspace = true
+sentry.workspace = true
+
+# database
+sqlx.workspace = true
+
+# async
+async-compression.workspace = true
+async-stream.workspace = true
+async-tempfile.workspace = true
+async-trait.workspace = true
+async_zip.workspace = true
+futures-lite.workspace = true
+futures-util = {workspace = true, features = ["std", "sink"]}
+reqwest-websocket.workspace = true
+reqwest.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+tokio.workspace = true
+
+# util (codegen/macro)
+regex.workspace = true
+serde_repr.workspace = true
+strum.workspace = true
+thiserror.workspace = true
+
+# crypto
+digest.workspace = true
+md-5.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+
+# util
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+directories.workspace = true
+dunce.workspace = true
+htmd.workspace = true
+image.workspace = true
+indicatif.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+sanitize-filename.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+trash.workspace = true
+url.workspace = true
+uuid = { workspace = true, features = ["v3", "serde"] }
+md5 = "0.8.1"

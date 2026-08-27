@@ -1,0 +1,58 @@
+use std::time::Duration;
+
+use bytes::Bytes;
+use freya::query::{Query, QueryCapability, UseQuery, use_query};
+use oneclient_core::LauncherError;
+
+const IMAGE_STALE: Duration = Duration::from_secs(60 * 60);
+const IMAGE_CLEAN: Duration = Duration::from_secs(6 * 60 * 60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CachedImageQuery;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CachedImageKeys {
+    pub url: String,
+    pub max_edge: u32,
+}
+
+impl QueryCapability for CachedImageQuery {
+    type Ok = Bytes;
+    type Err = LauncherError;
+    type Keys = CachedImageKeys;
+
+    #[tracing::instrument(name = "cached_image", level = "debug", skip(self, keys), fields(url = %keys.url, max_edge = keys.max_edge))]
+    async fn run(&self, keys: &Self::Keys) -> Result<Self::Ok, Self::Err> {
+        if keys.url.is_empty() {
+            return Err(LauncherError::Minecraft("no image url".to_string()));
+        }
+
+        let state = crate::launcher::state()?;
+        state
+            .images
+            .get(&state.services.requester, &keys.url, keys.max_edge)
+            .await
+    }
+}
+
+/// Returns the url alongside the bytes callers key their image handle on it
+/// and a stale url with fresh bytes renders the wrong picture for a frame
+pub fn loaded_image(
+    url: Option<&str>,
+    query: &UseQuery<CachedImageQuery>,
+) -> Option<(String, Bytes)> {
+    let url = url?;
+    let bytes = super::state::settled_or_loading(query)?;
+    Some((url.to_string(), bytes))
+}
+
+pub fn use_cached_image(url: Option<String>, max_edge: u32) -> UseQuery<CachedImageQuery> {
+    let url = url.unwrap_or_default();
+    let keys = (!url.is_empty()).then_some(CachedImageKeys { url, max_edge });
+
+    use_query(
+        Query::new(keys, CachedImageQuery)
+            .stale_time(IMAGE_STALE)
+            .clean_time(IMAGE_CLEAN),
+    )
+}

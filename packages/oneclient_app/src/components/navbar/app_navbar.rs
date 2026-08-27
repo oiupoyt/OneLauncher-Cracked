@@ -1,0 +1,312 @@
+use freya::{
+    animation::*,
+    prelude::*,
+    router::{RouterContext, use_route},
+};
+
+use crate::{
+    Route,
+    components::{Avatar, Icon, IconType},
+    hooks::{
+        settled_or_loading, try_default_account, use_active_cluster_id, use_clusters,
+        use_current_account, use_dispatch, use_notifications_snapshot,
+    },
+    theme,
+    utils::sort_clusters_for_home,
+};
+
+const NAVBAR_INTRO_MS: u64 = 460;
+
+#[derive(PartialEq)]
+pub struct Navbar;
+
+impl Component for Navbar {
+    fn render(&self) -> impl IntoElement {
+        let intro = use_animation(|conf| {
+            conf.on_creation(OnCreation::Run);
+            AnimNum::new(0., 1.)
+                .time(NAVBAR_INTRO_MS)
+                .ease(Ease::Out)
+                .function(Function::Cubic)
+        });
+        let eased = intro.get().value();
+        let slide = (1.0 - eased) * -theme::NAVBAR_HEIGHT_PX;
+
+        rect()
+            .width(Size::fill())
+            .height(Size::px(theme::NAVBAR_HEIGHT_PX))
+            .position(Position::new_absolute().top(0.).left(0.))
+            .layer(Layer::OverlayLevel(2))
+            .child(
+                rect()
+                    .width(Size::fill())
+                    .height(Size::fill())
+                    .horizontal()
+                    .content(Content::Flex)
+                    .cross_align(Alignment::Center)
+                    .padding(Gaps::new_symmetric(0.0, 40.0))
+                    .offset_y(slide)
+                    .opacity(eased)
+                    .child(navbar_left())
+                    .child(navbar_center())
+                    .child(NavbarRight),
+            )
+            .child(
+                rect()
+                    .window_drag()
+                    .width(Size::window_percent(100.))
+                    .height(Size::px(theme::NAVBAR_HEIGHT_PX))
+                    .position(Position::new_absolute().top(0.).left(0.).right(0.)),
+            )
+    }
+}
+
+fn navbar_left() -> impl IntoElement {
+    rect()
+        .horizontal()
+        .width(Size::flex(1.0))
+        .cross_align(Alignment::Center)
+        .child(navbar_logo())
+}
+
+fn navbar_logo() -> impl IntoElement {
+    let bytes = use_memo(|| crate::AppAssets::get_bytes("logo.svg").unwrap_or_default());
+
+    SvgViewer::new(("logo.svg", bytes.read().cloned()))
+        .show_loader(false)
+        .height(Size::px(44.))
+        .width(Size::px(214.))
+        .color(theme::colors::fg_primary())
+}
+
+fn navbar_center() -> impl IntoElement {
+    let route = use_route::<Route>();
+    let browse_target = browse_target();
+
+    rect()
+        .horizontal()
+        .width(Size::flex(1.0))
+        .main_align(Alignment::Center)
+        .cross_align(Alignment::Center)
+        .spacing(36.)
+        .child(NavLink {
+            active: route == Route::Home {},
+            target: NavTarget::Route(Route::Home {}),
+            nav_label: "Home",
+        })
+        .child(NavLink {
+            active: route == Route::Clusters {},
+            target: NavTarget::Route(Route::Clusters {}),
+            nav_label: "Versions",
+        })
+        .child(NavLink {
+            active: false,
+            target: NavTarget::External("https://store.polyfrost.org"),
+            nav_label: "Cosmetics",
+        })
+        .child(NavLink {
+            active: matches!(
+                route,
+                Route::Browser {
+                    pick_cluster: true,
+                    ..
+                }
+            ),
+            target: NavTarget::Route(browse_target),
+            nav_label: "Browse",
+        })
+        .child(NavLink {
+            active: route == Route::Stats {},
+            target: NavTarget::Route(Route::Stats {}),
+            nav_label: "Stats",
+        })
+}
+
+/// Falls back active cluster then most recently played then Versions when none exist
+fn browse_target() -> Route {
+    let clusters = settled_or_loading(&use_clusters()).unwrap_or_default();
+    let active = *use_active_cluster_id().read();
+
+    let cluster_id = active
+        .filter(|id| clusters.iter().any(|cluster| cluster.id == *id))
+        .or_else(|| sort_clusters_for_home(clusters).first().map(|c| c.id));
+
+    match cluster_id {
+        Some(cluster_id) => Route::Browser {
+            cluster_id,
+            package_type: "mod".to_string(),
+            pick_cluster: true,
+        },
+        None => Route::Clusters {},
+    }
+}
+
+#[derive(PartialEq, Clone)]
+enum NavTarget {
+    Route(Route),
+    External(&'static str),
+}
+
+#[derive(PartialEq)]
+struct NavLink {
+    active: bool,
+    target: NavTarget,
+    nav_label: &'static str,
+}
+
+impl Component for NavLink {
+    fn render(&self) -> impl IntoElement {
+        let mut hovering = use_state(|| false);
+        let a11y_id = use_a11y();
+        let focused = use_focus(a11y_id);
+
+        let active = self.active;
+        let target = self.target.clone();
+        let nav_label = self.nav_label;
+
+        let color = if active || hovering() || focused().is_focused() {
+            theme::colors::fg_primary()
+        } else {
+            theme::colors::fg_secondary()
+        };
+
+        let underline_width = if active {
+            27.
+        } else if hovering() || focused().is_focused() {
+            18.
+        } else {
+            0.
+        };
+
+        rect()
+            .vertical()
+            .cross_align(Alignment::Center)
+            .spacing(2.)
+            .width(Size::px(nav_label.len() as f32 * 10. + 10.))
+            // TODO workaround for a Freya measurement bug a fully transparent background
+            // measures wrongly so give it alpha 0 red to keep pointer events working
+            .background(Color::RED.with_a(0))
+            .a11y_id(a11y_id)
+            .a11y_focusable(true)
+            .a11y_role(AccessibilityRole::Button)
+            .on_all_press(move |e: Event<PressEventData>| {
+                e.prevent_default();
+                match &target {
+                    NavTarget::Route(route) => {
+                        let _ = RouterContext::get().push(route.clone());
+                    }
+                    NavTarget::External(url) => crate::platform::open_url(url),
+                }
+            })
+            .on_pointer_over(move |_| hovering.set(true))
+            .on_pointer_out(move |_| hovering.set(false))
+            .cursor(CursorIcon::Pointer)
+            .child(
+                label()
+                    .text(nav_label)
+                    .font_size(16.)
+                    .font_weight(if active {
+                        FontWeight::MEDIUM
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .color(color),
+            )
+            .child(
+                rect()
+                    .height(Size::px(2.))
+                    .width(Size::px(underline_width))
+                    .corner_radius(CornerRadius::new_all(2.))
+                    .background(if active {
+                        theme::colors::fg_primary()
+                    } else {
+                        theme::colors::fg_secondary()
+                    }),
+            )
+    }
+}
+
+#[derive(PartialEq)]
+struct NavbarRight;
+
+impl Component for NavbarRight {
+    fn render(&self) -> impl IntoElement {
+        let current_account = use_current_account();
+        let dispatch = use_dispatch();
+        let unread = use_notifications_snapshot().unread_count();
+
+        let account_uuid = try_default_account(&current_account)
+            .map(|account| account.id.to_string())
+            .unwrap_or_else(|| uuid::Uuid::nil().to_string());
+
+        let notif_dispatch = dispatch.clone();
+        let open_notifications = move |_| {
+            notif_dispatch.toggle_notification_center();
+        };
+
+        let open_account_switcher = move |_| {
+            dispatch.toggle_account_switcher();
+        };
+
+        let open_settings = |_| {
+            let _ = RouterContext::get().push(Route::SettingsLauncher {});
+        };
+
+        rect()
+            .horizontal()
+            .width(Size::flex(1.0))
+            .main_align(Alignment::End)
+            .cross_align(Alignment::Center)
+            .spacing(8.)
+            .child(
+                super::navbar_button()
+                    .child(notification_bell(unread))
+                    .on_press(open_notifications),
+            )
+            .child(
+                super::navbar_button()
+                    .child(Icon::new(IconType::Settings02).size(20.))
+                    .on_press(open_settings),
+            )
+            .child(
+                super::navbar_button()
+                    .padding(0.0)
+                    .on_press(open_account_switcher)
+                    .child(
+                        Avatar::new(account_uuid)
+                            .width(Size::px(24.))
+                            .height(Size::px(24.)),
+                    ),
+            )
+            .child(super::window_controls())
+    }
+}
+
+fn notification_bell(unread: usize) -> impl IntoElement {
+    rect()
+        .width(Size::px(20.))
+        .height(Size::px(20.))
+        .child(Icon::new(IconType::Bell01).size(20.))
+        .maybe_child((unread > 0).then(|| {
+            rect()
+                .position(Position::new_absolute().top(-4.).right(-4.))
+                .width(Size::px(16.))
+                .height(Size::px(16.))
+                .corner_radius(CornerRadius::from(8.))
+                .background(theme::colors::danger())
+                .layer(Layer::Relative(3))
+                .center()
+                .child(
+                    label()
+                        .text(if unread > 9 {
+                            "9+".to_string()
+                        } else {
+                            unread.to_string()
+                        })
+                        .font_size(10.)
+                        .font_weight(FontWeight::SEMI_BOLD)
+                        .color(theme::colors::fg_primary()),
+                )
+                .into_element()
+        }))
+}
