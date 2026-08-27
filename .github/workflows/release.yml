@@ -84,20 +84,23 @@ jobs:
         run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }}
         continue-on-error: true
 
+      - name: Generate RPM Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-generate-rpm --locked || true
+          cargo generate-rpm --target ${{ matrix.target }} -p oneclient_app || true
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.name }}
           path: |
-            target/${{ matrix.target }}/release/oneclient_app*
-            target/${{ matrix.target }}/release/OneClient*
             target/${{ matrix.target }}/release/*.deb
             target/${{ matrix.target }}/release/*.AppImage
             target/${{ matrix.target }}/release/*.dmg
-            target/${{ matrix.target }}/release/*.exe
-            target/${{ matrix.target }}/release/bundle/**/*
-            target/release/oneclient_app*
-            dist/**/*
+            target/${{ matrix.target }}/release/*-setup.exe
+            target/${{ matrix.target }}/generate-rpm/*.rpm
+            target/generate-rpm/*.rpm
 
   create-release:
     needs: build
@@ -108,6 +111,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./artifacts
+          merge-multiple: true
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
