@@ -9,28 +9,32 @@ on:
 permissions:
   contents: write
 
+env:
+  SQLX_OFFLINE: true
+  SQLX_OFFLINE_DIR: packages/oneclient_db/.sqlx
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 (.AppImage, .deb)
+          # Linux x86_64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
 
-          # Windows x86_64 (.exe installer)
+          # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
 
-          # macOS Apple Silicon (.dmg)
+          # macOS Apple Silicon
           - os: macos-14
             target: aarch64-apple-darwin
             name: macos-arm64
 
-          # macOS Intel (.dmg)
+          # macOS Intel
           - os: macos-13
             target: x86_64-apple-darwin
             name: macos-x86_64
