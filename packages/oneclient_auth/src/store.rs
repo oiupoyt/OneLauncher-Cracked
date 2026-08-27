@@ -23,8 +23,13 @@ impl CredentialsStore {
             return Ok(Self::default());
         }
 
-        match polyio::read_json(&path).await {
-            Ok(store) => Ok(store),
+        match polyio::read_json::<Self>(&path).await {
+            Ok(mut store) => {
+                if store.default_user.is_none() && !store.users.is_empty() {
+                    store.default_user = store.users.keys().copied().next();
+                }
+                Ok(store)
+            }
             Err(err) => {
                 tracing::warn!("failed to read auth file: {err}");
                 Ok(Self::default())
@@ -91,10 +96,6 @@ impl CredentialsStore {
     }
 
     fn insert_offline_account(&mut self, username: String) -> AuthResult<MinecraftAccount> {
-        if self.default_user.is_none() {
-            // will be set after inserting account
-        }
-
         validate_offline_username(&username)?;
 
         if self
@@ -102,11 +103,25 @@ impl CredentialsStore {
             .values()
             .any(|u| u.username.eq_ignore_ascii_case(&username))
         {
-            return Err(AuthError::DuplicateUsername { username });
+            if let Some(existing) = self
+                .users
+                .values()
+                .find(|u| u.username.eq_ignore_ascii_case(&username))
+                .cloned()
+            {
+                if self.default_user.is_none() {
+                    self.default_user = Some(existing.id);
+                }
+                return Ok(existing);
+            }
         }
 
         let account = offline_account(username);
-        self.users.insert(account.id, account.clone());
+        let id = account.id;
+        self.users.insert(id, account.clone());
+        if self.default_user.is_none() {
+            self.default_user = Some(id);
+        }
         Ok(account)
     }
 

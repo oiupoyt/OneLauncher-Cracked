@@ -1,8 +1,12 @@
 use freya::prelude::*;
 use oneclient_auth::MinecraftAccount;
 
-use crate::components::{Avatar, Button, Icon, IconType, use_microsoft_login};
-use crate::hooks::{try_default_account, use_current_account};
+use crate::components::{
+    Avatar, Button, Icon, IconType, TextInput, use_microsoft_login,
+};
+use crate::hooks::{
+    AddOfflineAccountKeys, try_default_account, use_add_offline_account, use_current_account,
+};
 use crate::routes::Route;
 use crate::theme::colors;
 use crate::view::onboarding::{
@@ -16,6 +20,9 @@ impl Component for OnboardingAccount {
     fn render(&self) -> impl IntoElement {
         let account_query = use_current_account();
         let msa = use_microsoft_login();
+        let add_offline = use_add_offline_account();
+
+        let offline_name = use_state(|| "Player".to_string());
 
         let account = try_default_account(&account_query);
         let has_account = account.is_some();
@@ -26,40 +33,72 @@ impl Component for OnboardingAccount {
             .spacing(24.)
             .child(step_heading(
                 "Account",
-                "Before you continue, we require you to own a copy of Minecraft: Java Edition.",
+                "Choose an offline username to play, or sign in with your Microsoft account.",
             ))
             .child(match &account {
                 Some(account) => account_preview(account).into_element(),
                 None => {
                     let start = msa.clone();
+                    let add_offline_click = add_offline.clone();
+                    let name_val = offline_name.read().trim().to_string();
+                    let target_name = if name_val.is_empty() {
+                        "Player".to_string()
+                    } else {
+                        name_val
+                    };
+
                     rect()
                         .vertical()
-                        .spacing(12.)
+                        .spacing(16.)
+                        .child(
+                            rect()
+                                .vertical()
+                                .spacing(8.)
+                                .child(
+                                    label()
+                                        .text("Play Offline:")
+                                        .font_size(14.)
+                                        .font_weight(FontWeight::SEMI_BOLD)
+                                        .color(colors::fg_primary()),
+                                )
+                                .child(
+                                    rect()
+                                        .horizontal()
+                                        .spacing(8.)
+                                        .cross_align(Alignment::Center)
+                                        .child(
+                                            TextInput::new(offline_name.clone())
+                                                .placeholder("Enter username")
+                                                .width(Size::px(220.)),
+                                        )
+                                        .child(
+                                            Button::new()
+                                                .primary()
+                                                .large()
+                                                .on_press(move |_| {
+                                                    add_offline_click.mutate(AddOfflineAccountKeys {
+                                                        username: target_name.clone(),
+                                                    });
+                                                })
+                                                .text("Play Offline"),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            rect()
+                                .horizontal()
+                                .cross_align(Alignment::Center)
+                                .spacing(8.)
+                                .child(
+                                    label()
+                                        .text("— or sign in with Microsoft —")
+                                        .font_size(12.)
+                                        .color(colors::fg_secondary()),
+                                ),
+                        )
                         .child(sign_in_card(msa.pending, msa.error.clone(), move |_| {
                             start.start()
                         }))
-                        .child(
-                            Button::new()
-                                .secondary()
-                                .large()
-                                .on_press(move |_| {
-                                    spawn(async move {
-                                        if let Ok(state) = crate::launcher::state() {
-                                            if let Ok(acc) = state
-                                                .auth
-                                                .add_offline_account("Player".to_string())
-                                                .await
-                                            {
-                                                let _ = state
-                                                    .auth
-                                                    .set_default_account(Some(acc.id))
-                                                    .await;
-                                            }
-                                        }
-                                    });
-                                })
-                                .text("Play Offline as Player"),
-                        )
                         .into_element()
                 }
             })
