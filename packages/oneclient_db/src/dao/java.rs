@@ -41,7 +41,7 @@ RETURNING absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
     Ok(row)
 }
 
-pub async fn get_by_absolute_path(
+pub async fn get_by_path(
     pool: &SqlitePool,
     absolute_path: &str,
 ) -> Result<Option<JavaVersionRow>, DbError> {
@@ -59,7 +59,10 @@ WHERE absolute_path = ?
     Ok(row)
 }
 
-pub async fn get_by_major(pool: &SqlitePool, major: u32) -> Result<Option<JavaVersionRow>, DbError> {
+pub async fn get_latest_by_major(
+    pool: &SqlitePool,
+    major: u32,
+) -> Result<Option<JavaVersionRow>, DbError> {
     let row = sqlx::query_as::<_, JavaVersionRow>(
         r#"
 SELECT absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
@@ -76,7 +79,24 @@ LIMIT 1
     Ok(row)
 }
 
-pub async fn get_all(pool: &SqlitePool) -> Result<Vec<JavaVersionRow>, DbError> {
+pub async fn delete_by_path(
+    pool: &SqlitePool,
+    absolute_path: &str,
+) -> Result<(), DbError> {
+    sqlx::query(
+        r#"
+DELETE FROM java_versions
+WHERE absolute_path = ?
+"#,
+    )
+    .bind(absolute_path)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn list_all(pool: &SqlitePool) -> Result<Vec<JavaVersionRow>, DbError> {
     let rows = sqlx::query_as::<_, JavaVersionRow>(
         r#"
 SELECT absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
