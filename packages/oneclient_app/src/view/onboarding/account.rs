@@ -22,10 +22,25 @@ impl Component for OnboardingAccount {
         let msa = use_microsoft_login();
         let add_offline = use_add_offline_account();
 
+        let auto_initialized = use_state(|| false);
         let offline_name = use_state(|| "Player".to_string());
 
         let account = try_default_account(&account_query);
-        let has_account = account.is_some();
+        let has_account = account.is_some() || *auto_initialized.read();
+
+        // Auto-provision default Player offline account on initial fresh install
+        use_side_effect({
+            let add_offline = add_offline.clone();
+            let mut auto_initialized = auto_initialized.clone();
+            move || {
+                if !*auto_initialized.read() {
+                    auto_initialized.set(true);
+                    add_offline.mutate(AddOfflineAccountKeys {
+                        username: "Player".to_string(),
+                    });
+                }
+            }
+        });
 
         let content = rect()
             .vertical()
