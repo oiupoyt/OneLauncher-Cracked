@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=OneClient
+Comment=Next-generation open source Minecraft launcher
+Exec=/usr/bin/oneclient_app
+Icon=oneclient_app
+Type=Application
+Terminal=false
+StartupNotify=true
+Categories=Game;ActionGame;AdventureGame;Simulation;
+Keywords=mc;minecraft;game;
+StartupWMClass=oneclient_app
