@@ -23,21 +23,25 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
+            formats: deb,appimage
 
           # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             name: windows-x86_64
+            formats: nsis
 
           # macOS Apple Silicon
           - os: macos-14
             target: aarch64-apple-darwin
             name: macos-arm64
+            formats: dmg,app
 
           # macOS Intel
           - os: macos-13
             target: x86_64-apple-darwin
             name: macos-x86_64
+            formats: dmg,app
 
     runs-on: ${{ matrix.os }}
 
@@ -54,7 +58,21 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y             libwebkit2gtk-4.1-dev             build-essential             curl             wget             file             libxdo-dev             libssl-dev             libayatana-appindicator3-dev             librsvg2-dev             libfontconfig1-dev             libfreetype6-dev             libgl1-mesa-dev             libvulkan-dev             libasound2-dev
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            libasound2-dev
 
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked || true
@@ -63,7 +81,7 @@ jobs:
         run: cargo build --release --bin oneclient_app --target ${{ matrix.target }}
 
       - name: Package Application
-        run: cargo packager --release --target ${{ matrix.target }}
+        run: cargo packager --release --target ${{ matrix.target }} --formats ${{ matrix.formats }}
         continue-on-error: true
 
       - name: Upload Build Artifacts
@@ -72,6 +90,11 @@ jobs:
           name: binaries-${{ matrix.name }}
           path: |
             target/${{ matrix.target }}/release/oneclient_app*
+            target/${{ matrix.target }}/release/OneClient*
+            target/${{ matrix.target }}/release/*.deb
+            target/${{ matrix.target }}/release/*.AppImage
+            target/${{ matrix.target }}/release/*.dmg
+            target/${{ matrix.target }}/release/*.exe
             target/${{ matrix.target }}/release/bundle/**/*
             target/release/oneclient_app*
             dist/**/*
