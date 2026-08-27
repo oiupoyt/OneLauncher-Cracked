@@ -7,6 +7,8 @@ forked from [OneLauncher](https://github.com/Polyfrost/OneLauncher) allowing for
 </div>
 
 ### download from [**Releases Page**](https://github.com/oiupoyt/onelauncher-but-cracked/releases).
+you will first launch wit a default username, you can change your by going to settings>minecraft account
+
 
 intended for offline usage only.
 
