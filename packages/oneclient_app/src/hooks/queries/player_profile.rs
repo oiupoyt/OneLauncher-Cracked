@@ -22,8 +22,21 @@ impl QueryCapability for FetchPlayerProfileQuery {
     type Keys = PlayerProfileQueryKeys;
 
     async fn run(&self, keys: &Self::Keys) -> Result<Self::Ok, Self::Err> {
-        let access_token = keys.access_token.clone();
+        let uuid_str = &keys.uuid;
+        if uuid_str.is_empty() {
+            return Ok(PlayerProfileView::default());
+        }
 
+        if let Ok(u) = uuid::Uuid::parse_str(uuid_str) {
+            if u.get_version() == Some(uuid::Version::Md5) || u.is_nil() {
+                return Ok(PlayerProfileView {
+                    uuid: uuid_str.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+
+        let access_token = keys.access_token.clone();
         let state = crate::launcher::state()?;
         let client = &state.services.requester;
 

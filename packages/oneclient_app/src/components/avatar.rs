@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use bytes::Bytes;
 use freya::elements::image::{ImageHandle, image};
 use freya::engine::prelude::{Paint, SkData, SkImage, raster_n32_premul};
@@ -9,6 +12,8 @@ const AVATAR_SIZE: f32 = 32.;
 const FACE: f32 = 8.;
 const HEAD_FACE: (f32, f32) = (8., 8.);
 const HEAD_OVERLAY: (f32, f32) = (40., 8.);
+
+static AVATAR_HEAD_CACHE: OnceLock<Mutex<HashMap<usize, ImageHandle>>> = OnceLock::new();
 
 #[derive(PartialEq, Clone)]
 pub struct Avatar {
@@ -40,20 +45,7 @@ impl Component for Avatar {
 
     fn render(&self) -> impl IntoElement {
         let (skin_bytes, _is_slim) = use_player_skin(self.uuid.clone());
-
-        let mut cache = use_state(|| None::<(usize, ImageHandle)>);
-        let src_ptr = skin_bytes.as_ptr() as usize;
-        let cached = cache.read().clone();
-        let head = match cached {
-            Some((ptr, holder)) if ptr == src_ptr => Some(holder),
-            _ => {
-                let holder = compose_head(&skin_bytes);
-                if let Some(holder) = &holder {
-                    cache.set(Some((src_ptr, holder.clone())));
-                }
-                holder
-            }
-        };
+        let head = get_or_compose_head(&skin_bytes);
 
         rect()
             .width(Size::px(AVATAR_SIZE))
@@ -69,6 +61,27 @@ impl Component for Avatar {
                     .corner_radius(CornerRadius::from(8.))
             }))
     }
+}
+
+fn get_or_compose_head(skin_bytes: &Bytes) -> Option<ImageHandle> {
+    if skin_bytes.is_empty() {
+        return None;
+    }
+    let src_ptr = skin_bytes.as_ptr() as usize;
+    let cache = AVATAR_HEAD_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        if let Ok(guard) = cache.lock() {
+            if let Some(handle) = guard.get(&src_ptr) {
+                return Some(handle.clone());
+            }
+        }
+    }
+
+    let composed = compose_head(skin_bytes)?;
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(src_ptr, composed.clone());
+    }
+    Some(composed)
 }
 
 fn compose_head(skin_bytes: &Bytes) -> Option<ImageHandle> {
