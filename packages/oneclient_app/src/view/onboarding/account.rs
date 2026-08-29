@@ -1,4 +1,5 @@
 use freya::prelude::*;
+use freya::query::MutationStateData;
 use freya::router::RouterContext;
 use oneclient_auth::MinecraftAccount;
 
@@ -25,6 +26,23 @@ impl Component for OnboardingAccount {
 
         let offline_name = use_state(|| "Player".to_string());
         let is_editing = use_state(|| false);
+        let mut is_navigating = use_state(|| false);
+
+        use_side_effect(move || {
+            if !*is_navigating.read() {
+                return;
+            }
+            match &*add_offline.read().state() {
+                MutationStateData::Settled { res: Ok(_), .. } => {
+                    is_navigating.set(false);
+                    let _ = RouterContext::get().replace(Route::OnboardingBundles {});
+                }
+                MutationStateData::Settled { res: Err(_), .. } => {
+                    is_navigating.set(false);
+                }
+                _ => {}
+            }
+        });
 
         let account = try_default_account(&account_query);
         let show_entry = account.is_none() || *is_editing.read();
@@ -132,16 +150,22 @@ impl Component for OnboardingAccount {
         let add_offline_nav = add_offline.clone();
         let offline_name_nav = offline_name.clone();
         let is_editing_nav = is_editing.clone();
+        let mut is_navigating_nav = is_navigating.clone();
         let account_clone = account.clone();
 
         let on_next = move |_| {
+            if *is_navigating_nav.read() {
+                return;
+            }
             if account_clone.is_none() || *is_editing_nav.read() {
                 let target = sanitize_offline_username(&offline_name_nav.read());
                 add_offline_nav.mutate(AddOfflineAccountKeys {
                     username: target,
                 });
+                is_navigating_nav.set(true);
+            } else {
+                let _ = RouterContext::get().replace(Route::OnboardingBundles {});
             }
-            let _ = RouterContext::get().replace(Route::OnboardingBundles {});
         };
 
         let nav = rect()
@@ -164,9 +188,13 @@ impl Component for OnboardingAccount {
                 Button::new()
                     .primary()
                     .width(Size::px(140.))
-                    .enabled(true)
+                    .enabled(!*is_navigating.read())
                     .on_press(on_next)
-                    .text("Next")
+                    .text(if *is_navigating.read() {
+                        "Saving..."
+                    } else {
+                        "Next"
+                    })
                     .child(Icon::new(IconType::ArrowRight).size(16.)),
             );
 
