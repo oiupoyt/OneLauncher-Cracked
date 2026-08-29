@@ -276,9 +276,9 @@ pub async fn launch_cluster(
         java.major,
     )?;
 
-    // Inject custom skin as a resource pack that overrides the default Steve/Alex texture.
-    // This is zero-overhead: no agents, no servers — just files on disk that Minecraft reads.
-    inject_skin_resource_pack(&cwd, &account.id.to_string()).await;
+    // Inject custom skin as a resource pack that overrides default character textures
+    // across all Minecraft versions, plus syncs to mod directories (CustomSkinLoader, etc.)
+    inject_skin_resource_pack(&cwd, &account.id.to_string(), &account.username).await;
 
     let mut mc_args = arguments::minecraft_arguments(
         updated,
@@ -683,23 +683,31 @@ async fn run_hook(hook: Option<&str>, cwd: &Path) {
     }
 }
 
+const ALL_DEFAULT_SKIN_FILENAMES: &[&str] = &[
+    "steve.png",
+    "alex.png",
+    "ari.png",
+    "efe.png",
+    "kai.png",
+    "makena.png",
+    "noor.png",
+    "sunny.png",
+    "zuri.png",
+];
+
 /// Creates (or updates) a `onelauncher_skin` resource pack in the game directory that
-/// overrides `assets/minecraft/textures/entity/player/wide/steve.png` (and the slim variant)
-/// with the player's saved custom skin PNG. Also patches `options.txt` to enable the pack.
+/// overrides all default player textures across all Minecraft versions (Steve, Alex, Ari, Efe, Kai, Makena, Noor, Sunny, Zuri)
+/// with the player's saved custom skin PNG. Also patches `options.txt` to enable the pack and syncs to mod folders.
 ///
 /// If the player has no custom skin, the pack folder and `options.txt` entry are cleaned up.
-async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str) {
+async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) {
     const PACK_NAME: &str = "onelauncher_skin";
 
     let resourcepacks_dir = game_dir.join("resourcepacks");
     let pack_dir = resourcepacks_dir.join(PACK_NAME);
-    let textures_wide = pack_dir
-        .join("assets/minecraft/textures/entity/player/wide");
-    let textures_slim = pack_dir
-        .join("assets/minecraft/textures/entity/player/slim");
     let options_txt = game_dir.join("options.txt");
 
-    // --- Resolve skin PNG + slim flag ---
+    // --- Resolve skin PNG ---
     let skin_path = match oneclient_common::paths::skin_file_path(uuid) {
         Ok(p) => p,
         Err(e) => {
@@ -708,17 +716,27 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str) {
         }
     };
 
-    if !skin_path.exists() {
-        // No custom skin — remove the pack dir and strip from options.txt so Minecraft
-        // falls back to its built-in default Steve/Alex.
+    let undashed = uuid.replace('-', "");
+    let alt_skin_path = oneclient_common::paths::skin_file_path(&undashed).unwrap_or_default();
+
+    let resolved_skin_path = if skin_path.exists() {
+        Some(skin_path)
+    } else if alt_skin_path.exists() {
+        Some(alt_skin_path)
+    } else {
+        None
+    };
+
+    let Some(valid_skin_path) = resolved_skin_path else {
+        // No custom skin — remove the pack dir and strip from options.txt
         if pack_dir.exists() {
             let _ = polyio::remove_dir_all(&pack_dir).await;
             patch_resource_packs_option(&options_txt, PACK_NAME, false).await;
         }
         return;
-    }
+    };
 
-    let skin_bytes = match polyio::read(&skin_path).await {
+    let skin_bytes = match polyio::read(&valid_skin_path).await {
         Ok(b) => b,
         Err(e) => {
             tracing::warn!("failed to read custom skin: {e}");
@@ -726,48 +744,75 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str) {
         }
     };
 
-    let meta_path = match oneclient_common::paths::skin_meta_path(uuid) {
-        Ok(p) => p,
-        Err(_) => return,
-    };
+    // 1. Write Resource Pack directory structure
+    let textures_wide = pack_dir.join("assets/minecraft/textures/entity/player/wide");
+    let textures_slim = pack_dir.join("assets/minecraft/textures/entity/player/slim");
+    let textures_player = pack_dir.join("assets/minecraft/textures/entity/player");
+    let textures_entity = pack_dir.join("assets/minecraft/textures/entity");
 
-    #[derive(serde::Deserialize)]
-    struct SkinMeta { is_slim: bool }
-    let is_slim = polyio::read_to_string(&meta_path)
-        .await
-        .ok()
-        .and_then(|s| serde_json::from_str::<SkinMeta>(&s).ok())
-        .map(|m| m.is_slim)
-        .unwrap_or(false);
-
-    // --- Write resource pack ---
     let _ = polyio::create_dir_all(&textures_wide).await;
     let _ = polyio::create_dir_all(&textures_slim).await;
+    let _ = polyio::create_dir_all(&textures_player).await;
+    let _ = polyio::create_dir_all(&textures_entity).await;
 
-    // Write to both models so the skin works regardless of the UUID-based default.
-    let wide_png = textures_wide.join("steve.png");
-    let slim_png = textures_slim.join("alex.png");
-    if let Err(e) = polyio::write(&wide_png, &skin_bytes).await {
-        tracing::warn!("failed to write wide skin texture: {e}");
-        return;
-    }
-    if let Err(e) = polyio::write(&slim_png, &skin_bytes).await {
-        tracing::warn!("failed to write slim skin texture: {e}");
-        return;
+    // Overwrite all 9 modern characters for both wide and slim, and generic player directory
+    for name in ALL_DEFAULT_SKIN_FILENAMES {
+        let _ = polyio::write(textures_wide.join(name), &skin_bytes).await;
+        let _ = polyio::write(textures_slim.join(name), &skin_bytes).await;
+        let _ = polyio::write(textures_player.join(name), &skin_bytes).await;
     }
 
-    // pack.mcmeta — supported_formats covers all known MC releases
-    let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher custom skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
+    // Overwrite legacy entity textures for 1.8 - 1.19
+    let _ = polyio::write(textures_entity.join("steve.png"), &skin_bytes).await;
+    let _ = polyio::write(textures_entity.join("alex.png"), &skin_bytes).await;
+
+    // pack.mcmeta with universal format compatibility
+    let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher Custom Skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
     let _ = polyio::write(pack_dir.join("pack.mcmeta"), mcmeta.as_bytes()).await;
 
-    let _ = is_slim; // logged below; both textures are written regardless
-    tracing::debug!(uuid, is_slim, "skin resource pack written");
+    // 2. Also sync to mod directories (CustomSkinLoader, OfflineSkins, etc.) in game_dir
+    let mod_targets = [
+        game_dir.join("CustomSkinLoader").join("skins").join(format!("{username}.png")),
+        game_dir.join("CustomSkinLoader").join("skins").join(format!("{uuid}.png")),
+        game_dir.join("CustomSkinLoader").join("skins").join(format!("{undashed}.png")),
+        game_dir.join("config").join("offlineskins").join(format!("{username}.png")),
+        game_dir.join("config").join("offlineskins").join(format!("{uuid}.png")),
+        game_dir.join("config").join("offlineskins").join(format!("{undashed}.png")),
+        game_dir.join("cachedImages").join("skins").join(format!("{uuid}.png")),
+        game_dir.join("cachedImages").join("skins").join(format!("{undashed}.png")),
+    ];
+    for target in mod_targets {
+        if let Some(parent) = target.parent() {
+            let _ = polyio::create_dir_all(parent).await;
+        }
+        let _ = polyio::write(&target, &skin_bytes).await;
+    }
 
-    // --- Patch options.txt ---
+    // Also sync to shared .minecraft if distinct from game_dir
+    if let Ok(shared) = oneclient_common::paths::shared_minecraft_dir() {
+        if shared != game_dir {
+            let shared_targets = [
+                shared.join("CustomSkinLoader").join("skins").join(format!("{username}.png")),
+                shared.join("CustomSkinLoader").join("skins").join(format!("{uuid}.png")),
+                shared.join("config").join("offlineskins").join(format!("{username}.png")),
+                shared.join("config").join("offlineskins").join(format!("{uuid}.png")),
+            ];
+            for target in shared_targets {
+                if let Some(parent) = target.parent() {
+                    let _ = polyio::create_dir_all(parent).await;
+                }
+                let _ = polyio::write(&target, &skin_bytes).await;
+            }
+        }
+    }
+
+    tracing::info!(uuid, username, "skin resource pack and mod skins ready");
+
+    // 3. Patch options.txt to ensure the resource pack is enabled
     patch_resource_packs_option(&options_txt, PACK_NAME, true).await;
 }
 
-/// Reads `options.txt`, adds or removes `"file/<name>"` from the `resourcePacks` list,
+/// Reads `options.txt`, adds or removes `"file/<name>"` from the `resourcePacks` and `incompatibleResourcePacks` list,
 /// and writes it back. Safe to call even if `options.txt` does not yet exist.
 async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable: bool) {
     let file_entry = format!("\"file/{pack_name}\"");
@@ -778,32 +823,45 @@ async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable
 
     let mut lines: Vec<String> = content.lines().map(String::from).collect();
 
-    // Find existing resourcePacks line or remember we need to add one.
-    let mut found = false;
+    let mut found_rp = false;
+    let mut found_incomp = false;
+
     for line in &mut lines {
-        if !line.starts_with("resourcePacks:") {
-            continue;
+        if line.starts_with("resourcePacks:") {
+            found_rp = true;
+            let raw = line.trim_start_matches("resourcePacks:").trim();
+            let mut packs: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
+            packs.retain(|p| p != "vanilla" && p != &file_entry);
+            if enable {
+                packs.insert(0, "vanilla".to_string());
+                packs.push(file_entry.clone());
+            } else {
+                packs.insert(0, "vanilla".to_string());
+            }
+            *line = format!(
+                "resourcePacks:{}",
+                serde_json::to_string(&packs).unwrap_or_else(|_| "[\"vanilla\"]".to_string())
+            );
+        } else if line.starts_with("incompatibleResourcePacks:") {
+            found_incomp = true;
+            let raw = line.trim_start_matches("incompatibleResourcePacks:").trim();
+            let mut packs: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
+            packs.retain(|p| p != &file_entry);
+            if enable {
+                packs.push(file_entry.clone());
+            }
+            *line = format!(
+                "incompatibleResourcePacks:{}",
+                serde_json::to_string(&packs).unwrap_or_else(|_| "[]".to_string())
+            );
         }
-        found = true;
-
-        // Parse the JSON array value after the colon.
-        let raw = line.trim_start_matches("resourcePacks:").trim();
-        let mut packs: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
-
-        packs.retain(|p| p != &file_entry);
-        if enable {
-            packs.push(file_entry.clone());
-        }
-
-        *line = format!(
-            "resourcePacks:{}",
-            serde_json::to_string(&packs).unwrap_or_else(|_| "[]".to_string())
-        );
-        break;
     }
 
-    if !found && enable {
-        lines.push(format!("resourcePacks:[{file_entry}]"));
+    if !found_rp && enable {
+        lines.push(format!("resourcePacks:[\"vanilla\",{file_entry}]"));
+    }
+    if !found_incomp && enable {
+        lines.push(format!("incompatibleResourcePacks:[{file_entry}]"));
     }
 
     let new_content = lines.join("\n") + "\n";

@@ -203,13 +203,12 @@ impl Component for ClusterContentOutlet {
 
         use_side_effect_with_deps(&anim_finished, move |&finished| {
             if finished {
+                if matches!(&*router.peek(), AnimatedRouterContext::FromTo(_, _)) {
+                    router.write().settle();
+                }
                 Platform::get().send(UserEvent::RequestRedraw);
             }
         });
-
-        if anim_finished && matches!(&*router.peek(), AnimatedRouterContext::FromTo(_, _)) {
-            router.write().settle();
-        }
 
         const CONTENT_DX: f32 = 44.;
         let p = if anim_finished {

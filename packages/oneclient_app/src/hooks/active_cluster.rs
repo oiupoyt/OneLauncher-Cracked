@@ -53,7 +53,7 @@ pub fn use_link_confirm() -> State<Option<String>> {
     consume_root_context::<LinkConfirmState>().0
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BrowserUiState {
     pub query: String,
     pub provider: ProviderId,

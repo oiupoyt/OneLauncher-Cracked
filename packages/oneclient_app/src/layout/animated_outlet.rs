@@ -103,13 +103,12 @@ impl Component for AnimatedAppOutlet {
 
         use_side_effect_with_deps(&anim_finished, move |&finished| {
             if finished {
+                if matches!(&*router.peek(), AnimatedRouterContext::FromTo(_, _)) {
+                    router.write().settle();
+                }
                 Platform::get().send(UserEvent::RequestRedraw);
             }
         });
-
-        if anim_finished && matches!(&*router.peek(), AnimatedRouterContext::FromTo(_, _)) {
-            router.write().settle();
-        }
 
         let kind = match &*router.read() {
             AnimatedRouterContext::FromTo(from, to) => enter_kind(from, to),

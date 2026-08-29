@@ -92,14 +92,22 @@ impl Component for Browser {
         {
             let mut store = store;
             let key = state_key.clone();
-            use_side_effect(move || {
+            let deps = (
+                query.read().clone(),
+                *provider.read(),
+                selected_categories.read().clone(),
+                *page.read(),
+            );
+            use_side_effect_with_deps(&deps, move |(q, prov, cats, p)| {
                 let snapshot = BrowserUiState {
-                    query: query.read().clone(),
-                    provider: *provider.read(),
-                    categories: selected_categories.read().clone(),
-                    page: *page.read(),
+                    query: q.clone(),
+                    provider: *prov,
+                    categories: cats.clone(),
+                    page: *p,
                 };
-                store.write().insert(key.clone(), snapshot);
+                if store.peek().get(&key) != Some(&snapshot) {
+                    store.write().insert(key.clone(), snapshot);
+                }
             });
         }
 
