@@ -72,12 +72,7 @@ impl Component for OnboardingAccount {
                                             .primary()
                                             .large()
                                             .on_press(move |_| {
-                                                let name_val = offline_name_read.read().trim().to_string();
-                                                let target = if name_val.is_empty() {
-                                                    "Player".to_string()
-                                                } else {
-                                                    name_val
-                                                };
+                                                let target = sanitize_offline_username(&offline_name_read.read());
                                                 add_offline_click.mutate(AddOfflineAccountKeys {
                                                     username: target,
                                                 });
@@ -85,6 +80,12 @@ impl Component for OnboardingAccount {
                                             })
                                             .text("Set & Play"),
                                     ),
+                            )
+                            .child(
+                                label()
+                                    .text("3–16 characters (letters, numbers, underscore)")
+                                    .font_size(11.)
+                                    .color(colors::fg_secondary()),
                             ),
                     )
                     .child(
@@ -135,12 +136,7 @@ impl Component for OnboardingAccount {
 
         let on_next = move |_| {
             if account_clone.is_none() || *is_editing_nav.read() {
-                let name_val = offline_name_nav.read().trim().to_string();
-                let target = if name_val.is_empty() {
-                    "Player".to_string()
-                } else {
-                    name_val
-                };
+                let target = sanitize_offline_username(&offline_name_nav.read());
                 add_offline_nav.mutate(AddOfflineAccountKeys {
                     username: target,
                 });
@@ -262,3 +258,19 @@ fn sign_in_card(
         }))
         .into_element()
 }
+
+fn sanitize_offline_username(input: &str) -> String {
+    let trimmed = input.trim();
+    let sanitized: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if sanitized.len() < 3 {
+        "Player".to_string()
+    } else if sanitized.len() > 16 {
+        sanitized[..16].to_string()
+    } else {
+        sanitized
+    }
+}
+
