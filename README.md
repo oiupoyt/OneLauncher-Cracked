@@ -6,7 +6,7 @@ forked from [OneLauncher](https://github.com/Polyfrost/OneLauncher) allowing for
 
 </div>
 
-## download from [**Releases Page**](https://github.com/oiupoyt/OneClient-Cracked/releases).
+## download from [**Releases Page**](https://github.com/oiupoyt/OneLauncher-Cracked/releases).
 yes the actual client performs normally aswell
 
 
