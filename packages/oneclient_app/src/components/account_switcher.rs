@@ -9,8 +9,8 @@ use crate::{
     Route,
     components::{Avatar, Button, Icon, IconType, OverlayPopup},
     hooks::{
-        SetDefaultAccountKeys, try_accounts, try_default_account, use_account_switcher_open,
-        use_accounts, use_current_account, use_dispatch, use_set_default_account,
+        try_accounts, try_default_account, use_account_switcher_open, use_accounts,
+        use_current_account, use_dispatch,
     },
     theme::colors,
     ui::divider,
@@ -157,15 +157,19 @@ impl Component for AccountRow {
         let active = self.active;
 
         let dispatch = use_dispatch();
-        let set_default = use_set_default_account();
         let mut hovered = use_state(|| false);
 
         let switch = move |_| {
             if active {
                 return;
             }
-            set_default.mutate(SetDefaultAccountKeys { id: Some(id) });
             dispatch.close_account_switcher();
+            spawn(async move {
+                if let Ok(state) = crate::launcher::state() {
+                    let _ = state.auth.set_default_account(Some(id)).await;
+                    crate::hooks::invalidate_auth_queries(Some(id)).await;
+                }
+            });
         };
 
         rect()
