@@ -42,6 +42,9 @@ notify.workspace = true
 
 anyhow.workspace = true
 regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest.workspace = true
 
 cargo-packager-updater = "=0.2.3"
 

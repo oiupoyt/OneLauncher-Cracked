@@ -57,6 +57,18 @@ pub fn logs_dir() -> PathsResult<PathBuf> {
     Ok(launcher_dir()?.join("logs"))
 }
 
+pub fn skins_dir() -> PathsResult<PathBuf> {
+    Ok(launcher_dir()?.join("skins"))
+}
+
+pub fn skin_file_path(uuid: &str) -> PathsResult<PathBuf> {
+    Ok(skins_dir()?.join(format!("{uuid}.png")))
+}
+
+pub fn skin_meta_path(uuid: &str) -> PathsResult<PathBuf> {
+    Ok(skins_dir()?.join(format!("{uuid}.json")))
+}
+
 pub fn java_dir() -> PathsResult<PathBuf> {
     Ok(launcher_dir()?.join("metadata").join("java"))
 }

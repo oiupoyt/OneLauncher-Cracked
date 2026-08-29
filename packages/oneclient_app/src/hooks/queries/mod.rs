@@ -88,7 +88,10 @@ pub use settings_profiles::{
     try_game_profile, use_cluster_profile, use_cluster_settings, use_game_profile,
     use_named_profiles,
 };
-pub use skin::use_player_skin;
+pub use skin::{
+    delete_account_skin, fetch_skin_online, invalidate_skin_queries, save_account_skin,
+    use_custom_skin, use_player_skin,
+};
 pub use state::{query_error, query_is_busy, query_is_loading, settled_or_loading};
 pub use storage::{
     StorageAction, StorageActionMutation, StorageReportQuery, UseStorageAction,

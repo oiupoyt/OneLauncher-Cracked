@@ -100,9 +100,9 @@ fn navbar_center() -> impl IntoElement {
             nav_label: "Versions",
         })
         .child(NavLink {
-            active: false,
-            target: NavTarget::External("https://store.polyfrost.org"),
-            nav_label: "Cosmetics",
+            active: route == Route::AccountSkins {},
+            target: NavTarget::Route(Route::AccountSkins {}),
+            nav_label: "Skins",
         })
         .child(NavLink {
             active: matches!(
@@ -142,6 +142,7 @@ fn browse_target() -> Route {
 }
 
 #[derive(PartialEq, Clone)]
+#[allow(dead_code)]
 enum NavTarget {
     Route(Route),
     External(&'static str),

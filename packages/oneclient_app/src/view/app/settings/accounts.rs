@@ -293,6 +293,15 @@ fn hero(
                                         .on_press(on_open_offline)
                                         .child(Icon::new(IconType::Plus).size(16.))
                                         .text("Add offline"),
+                                )
+                                .child(
+                                    Button::new()
+                                        .secondary()
+                                        .on_press(|_| {
+                                            let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
+                                        })
+                                        .child(Icon::new(IconType::Colors).size(16.))
+                                        .text("Change Skin"),
                                 ),
                         )
                         .map(error, |el, msg| {
@@ -628,6 +637,20 @@ impl Component for AccountRow {
                     )
                     .into_element()
             }))
+            .child(
+                Button::new()
+                    .ghost()
+                    .icon()
+                    .on_press(move |e: Event<PressEventData>| {
+                        e.stop_propagation();
+                        let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
+                    })
+                    .child(
+                        Icon::new(IconType::Colors)
+                            .size(18.)
+                            .color(colors::fg_primary()),
+                    ),
+            )
             .child({
                 let is_offline = !is_microsoft;
                 let mut edit_acc_state = self.edit_account;
