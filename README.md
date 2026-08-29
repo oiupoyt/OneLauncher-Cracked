@@ -11,7 +11,6 @@ you will first launch with a default username, you can change your by going to s
 
 
 
-#### The Trojan:Win32/Wacatac.B!ml detection is a false positive triggered by Microsoft Defender's machine learning heuristic on newly compiled, unsigned Rust NSIS installers. The software contains no malware, telemetry, or malicious payloads. 
 intended for offline usage only.
 
 
