@@ -129,4 +129,6 @@ jobs:
           prerelease: false
           generate_release_notes: true
           make_latest: true
+          fail_on_unmatched_files: false
+
 
