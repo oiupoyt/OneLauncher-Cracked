@@ -89,8 +89,8 @@ pub use settings_profiles::{
     use_named_profiles,
 };
 pub use skin::{
-    delete_account_skin, fetch_skin_online, invalidate_skin_queries, save_account_skin,
-    use_custom_skin, use_player_skin,
+    delete_account_skin, invalidate_skin_queries, save_account_skin, use_custom_skin,
+    use_player_skin,
 };
 pub use state::{query_error, query_is_busy, query_is_loading, settled_or_loading};
 pub use storage::{

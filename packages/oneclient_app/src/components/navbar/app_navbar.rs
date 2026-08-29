@@ -86,6 +86,7 @@ struct NavbarCenter;
 impl Component for NavbarCenter {
     fn render(&self) -> impl IntoElement {
         let route = use_route::<Route>();
+        let browse_target = browse_target();
 
         rect()
             .horizontal()
@@ -109,8 +110,14 @@ impl Component for NavbarCenter {
                 nav_label: "Skins",
             })
             .child(NavLink {
-                active: matches!(route, Route::Browser { .. }),
-                target: NavTarget::Route(Route::Clusters {}),
+                active: matches!(
+                    route,
+                    Route::Browser {
+                        pick_cluster: true,
+                        ..
+                    }
+                ),
+                target: NavTarget::Route(browse_target),
                 nav_label: "Browse",
             })
             .child(NavLink {
@@ -118,6 +125,25 @@ impl Component for NavbarCenter {
                 target: NavTarget::Route(Route::Stats {}),
                 nav_label: "Stats",
             })
+    }
+}
+
+/// Falls back to active cluster then most recently played then Versions when none exist
+fn browse_target() -> Route {
+    let clusters = crate::hooks::settled_or_loading(&crate::hooks::use_clusters()).unwrap_or_default();
+    let active = *crate::hooks::use_active_cluster_id().read();
+
+    let cluster_id = active
+        .filter(|id| clusters.iter().any(|cluster| cluster.id == *id))
+        .or_else(|| crate::utils::sort_clusters_for_home(clusters).first().map(|c| c.id));
+
+    match cluster_id {
+        Some(cluster_id) => Route::Browser {
+            cluster_id,
+            package_type: "mod".to_string(),
+            pick_cluster: true,
+        },
+        None => Route::Clusters {},
     }
 }
 

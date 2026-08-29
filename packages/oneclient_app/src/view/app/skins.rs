@@ -1,10 +1,10 @@
 use freya::prelude::*;
 use oneclient_auth::MinecraftAccount;
 
-use crate::components::{Button, Icon, IconType, OverlayPopup, PlayerModel, TextInput};
+use crate::components::{Button, Icon, IconType, PlayerModel};
 use crate::hooks::{
-    delete_account_skin, fetch_skin_online, save_account_skin, try_accounts, try_default_account,
-    use_accounts, use_current_account, use_custom_skin,
+    delete_account_skin, save_account_skin, try_accounts, try_default_account, use_accounts,
+    use_current_account, use_custom_skin,
 };
 use crate::theme::colors;
 use crate::ui::border_all_color;
@@ -31,7 +31,6 @@ impl Component for AccountSkins {
         let username = active_account.as_ref().map(|a| a.username.clone());
 
         let status_msg = use_state(|| None::<(String, bool)>); // (message, is_error)
-        let show_url_modal = use_state(|| false);
         let is_loading = use_state(|| false);
 
         rect()
@@ -52,15 +51,8 @@ impl Component for AccountSkins {
                 accounts,
                 selected_id,
                 status_msg,
-                show_url_modal,
                 is_loading,
             ))
-            .maybe_child((*show_url_modal.read()).then(|| UrlModal {
-                selected_id,
-                status_msg,
-                show_url_modal,
-                is_loading,
-            }))
     }
 }
 
@@ -240,7 +232,6 @@ fn side_panel(
     accounts: Vec<MinecraftAccount>,
     selected_id: State<Option<uuid::Uuid>>,
     status_msg: State<Option<(String, bool)>>,
-    show_url_modal: State<bool>,
     is_loading: State<bool>,
 ) -> impl IntoElement {
     let username = active_account
@@ -350,8 +341,6 @@ fn side_panel(
         });
     };
 
-    let mut open_url_dialog = show_url_modal;
-
     rect()
         .vertical()
         .width(Size::flex(1.0))
@@ -430,24 +419,6 @@ fn side_panel(
                         ),
                 )
                 .child(
-                    Button::new()
-                        .ghost()
-                        .enabled(!*is_loading.read() && account_id.is_some())
-                        .on_press(move |_| open_url_dialog.set(true))
-                        .child(
-                            rect()
-                                .horizontal()
-                                .spacing(8.)
-                                .cross_align(Alignment::Center)
-                                .child(Icon::new(IconType::Globe01).size(18.))
-                                .child(
-                                    label()
-                                        .text("Import by Username / URL")
-                                        .font_size(14.),
-                                ),
-                        ),
-                )
-                .child(
                     rect()
                         .horizontal()
                         .spacing(12.)
@@ -477,8 +448,8 @@ fn side_panel(
                                         .cross_align(Alignment::Center)
                                         .child(
                                             Icon::new(IconType::Trash01)
-                                                .size(16.)
-                                                .color(colors::danger()),
+                                                 .size(16.)
+                                                 .color(colors::danger()),
                                         )
                                         .child(
                                             label()
@@ -500,14 +471,14 @@ fn side_panel(
                 .spacing(6.)
                 .child(
                     label()
-                        .text("Offline Skin Loader Integration")
+                        .text("Offline Skin System")
                         .font_size(13.)
                         .font_weight(FontWeight::SEMI_BOLD)
                         .color(colors::fg_primary()),
                 )
                 .child(
                     label()
-                        .text("Custom skins are saved locally to your profile and automatically synchronized to CustomSkinLoader so your skin shows up in game seamlessly on offline/cracked clusters.")
+                        .text("Custom skins are saved locally to your profile and seamlessly loaded into singleplayer and offline servers.")
                         .font_size(12.)
                         .color(colors::fg_secondary()),
                 ),
@@ -574,107 +545,4 @@ fn account_selector(
                         .into_element()
                 })),
         )
-}
-
-#[derive(PartialEq, Clone)]
-struct UrlModal {
-    selected_id: State<Option<uuid::Uuid>>,
-    status_msg: State<Option<(String, bool)>>,
-    show_url_modal: State<bool>,
-    is_loading: State<bool>,
-}
-
-impl Component for UrlModal {
-    fn render(&self) -> impl IntoElement {
-        let input_text = use_state(String::new);
-        let mut modal_open = self.show_url_modal;
-        let mut status = self.status_msg;
-        let mut loading = self.is_loading;
-
-        let target_uuid = (*self.selected_id.peek()).map(|id| id.to_string());
-
-        let apply_url = move |_| {
-            let Some(ref uuid_str) = target_uuid else {
-                return;
-            };
-            let uuid_str = uuid_str.clone();
-            let query = input_text.peek().trim().to_string();
-            if query.is_empty() {
-                return;
-            }
-
-            loading.set(true);
-            modal_open.set(false);
-
-            spawn(async move {
-                match fetch_skin_online(&query).await {
-                    Ok((bytes, is_slim)) => {
-                        let _ = save_account_skin(&uuid_str, None, &bytes, is_slim).await;
-                        status.set(Some((
-                            format!("Skin for \"{query}\" applied successfully!"),
-                            false,
-                        )));
-                    }
-                    Err(err) => {
-                        status.set(Some((err, true)));
-                    }
-                }
-                loading.set(false);
-            });
-        };
-
-        OverlayPopup::new()
-            .position(Position::new_global().top(140.).left(280.))
-            .on_close(move |()| modal_open.set(false))
-            .child(
-                rect()
-                    .vertical()
-                    .width(Size::px(380.))
-                    .padding(Gaps::new_all(20.))
-                    .spacing(16.)
-                    .corner_radius(CornerRadius::new_all(12.))
-                    .background(colors::page_elevated())
-                    .border(border_all_color(1., colors::component_border()))
-                    .shadow(Shadow::from((0., 8., 32., 0., Color::from_argb(140, 0, 0, 0))))
-                    .child(
-                        label()
-                            .text("Import Skin by Username or URL")
-                            .font_size(16.)
-                            .font_weight(FontWeight::SEMI_BOLD)
-                            .color(colors::fg_primary()),
-                    )
-                    .child(
-                        label()
-                            .text(
-                                "Enter any Minecraft player name (e.g. Technoblade, Notch) or a direct skin image URL:",
-                            )
-                            .font_size(12.)
-                            .color(colors::fg_secondary()),
-                    )
-                    .child(
-                        TextInput::new(input_text)
-                            .placeholder("Username (e.g. Dream) or https://...")
-                            .width(Size::fill()),
-                    )
-                    .child(
-                        rect()
-                            .horizontal()
-                            .main_align(Alignment::End)
-                            .spacing(8.)
-                            .child(
-                                Button::new()
-                                    .ghost()
-                                    .on_press(move |_| modal_open.set(false))
-                                    .text("Cancel"),
-                            )
-                            .child(
-                                Button::new()
-                                    .primary()
-                                    .on_press(apply_url)
-                                    .text("Apply Skin"),
-                            ),
-                    ),
-            )
-            .into_element()
-    }
 }

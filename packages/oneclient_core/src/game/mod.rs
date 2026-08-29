@@ -6,6 +6,7 @@ mod process;
 mod reattach;
 mod session;
 mod shared_dir;
+pub mod skin_server;
 mod tail;
 
 pub use analytics::{

@@ -263,7 +263,7 @@ pub async fn launch_cluster(
         updated,
     )?;
 
-    let jvm_args = arguments::java_arguments(
+    let mut jvm_args = arguments::java_arguments(
         updated,
         arg_map.get(&ArgumentType::Jvm).map(Vec::as_slice),
         &natives,
@@ -275,6 +275,22 @@ pub async fn launch_cluster(
         &java.os_arch,
         java.major,
     )?;
+
+    // Integrate Offline Skin System (Authlib-Injector + Local Skin Server + Mod Folder Sync)
+    let account_uuid_str = account.id.to_string();
+    crate::game::skin_server::sync_offline_skins(&cwd, &account_uuid_str, &account.username).await;
+
+    if let Ok(port) = crate::game::skin_server::ensure_skin_server().await {
+        if let Ok(injector_jar) = crate::game::skin_server::prepare_authlib_injector().await {
+            let agent_arg = format!(
+                "-javaagent:{}={}",
+                injector_jar.display(),
+                format!("http://127.0.0.1:{port}")
+            );
+            tracing::info!(%agent_arg, "attaching authlib-injector for offline skin support");
+            jvm_args.push(agent_arg);
+        }
+    }
 
     let mut mc_args = arguments::minecraft_arguments(
         updated,
