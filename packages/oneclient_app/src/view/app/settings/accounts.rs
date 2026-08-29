@@ -38,28 +38,10 @@ impl Component for SettingsAccounts {
         let remove = use_remove_account();
         let refresh = use_refresh_account();
 
-        let mut username = use_state(String::new);
+        let username = use_state(String::new);
         let mut show_offline = use_state(|| false);
         let edit_account = use_state(|| None::<(Uuid, String)>);
         let edit_name = use_state(|| String::new());
-        let mut closing_offline = use_state(|| false);
-
-        use_side_effect(move || {
-            if !*closing_offline.read() {
-                return;
-            }
-            match &*add_offline.read().state() {
-                MutationStateData::Settled { res: Ok(_), .. } => {
-                    closing_offline.set(false);
-                    show_offline.set(false);
-                    username.set(String::new());
-                }
-                MutationStateData::Settled { res: Err(_), .. } => {
-                    closing_offline.set(false);
-                }
-                _ => {}
-            }
-        });
 
         let accounts = try_accounts(&accounts_query).unwrap_or_default();
         let default_account = try_default_account(&default_query);
@@ -77,8 +59,20 @@ impl Component for SettingsAccounts {
             if name.is_empty() {
                 return;
             }
-            add_offline.mutate(AddOfflineAccountKeys { username: name });
-            closing_offline.set(true);
+            let mut show_offline = show_offline;
+            let mut username = username;
+            spawn(async move {
+                let reader = add_offline
+                    .mutate_async(AddOfflineAccountKeys { username: name })
+                    .await;
+                if matches!(
+                    &*reader.state(),
+                    MutationStateData::Settled { res: Ok(_), .. }
+                ) {
+                    show_offline.set(false);
+                    username.set(String::new());
+                }
+            });
         };
 
         let mut rows: Vec<Element> = accounts

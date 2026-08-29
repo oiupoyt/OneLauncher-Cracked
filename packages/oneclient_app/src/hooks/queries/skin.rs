@@ -1,66 +1,84 @@
-use std::time::Duration;
-
 use bytes::Bytes;
-use freya::prelude::*;
 use freya::query::{QueriesStorage, Query, QueryCapability, UseQuery, use_query};
-use oneclient_core::LauncherError;
+use oneclient_common::paths::{shared_minecraft_dir, skin_file_path, skin_meta_path, skins_dir};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::AppAssets;
 
-const SKIN_STALE: Duration = Duration::from_secs(60);
-const SKIN_CLEAN: Duration = Duration::from_secs(60 * 60);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CustomSkinQuery;
+const SKIN_STALE: Duration = Duration::from_secs(5 * 60);
+const SKIN_CLEAN: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CustomSkinKeys {
     pub uuid: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct SkinMetadata {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomSkinData {
+    pub uuid: String,
+    pub has_custom: bool,
+    pub bytes: Option<Bytes>,
     pub is_slim: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct CustomSkinData {
-    pub bytes: Option<Bytes>,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct SkinMetadata {
     pub is_slim: bool,
-    pub has_custom: bool,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CustomSkinQuery;
 
 impl QueryCapability for CustomSkinQuery {
     type Ok = CustomSkinData;
-    type Err = LauncherError;
+    type Err = String;
     type Keys = CustomSkinKeys;
 
     async fn run(&self, keys: &Self::Keys) -> Result<Self::Ok, Self::Err> {
-        let Ok(path) = oneclient_common::paths::skin_file_path(&keys.uuid) else {
-            return Ok(CustomSkinData::default());
-        };
-
-        if let Ok(bytes) = polyio::read(&path).await {
-            if !bytes.is_empty() {
-                let mut is_slim = false;
-                if let Ok(meta_path) = oneclient_common::paths::skin_meta_path(&keys.uuid) {
-                    if let Ok(meta_bytes) = polyio::read(&meta_path).await {
-                        if let Ok(meta) = serde_json::from_slice::<SkinMetadata>(&meta_bytes) {
-                            is_slim = meta.is_slim;
-                        }
-                    }
-                }
-
-                return Ok(CustomSkinData {
-                    bytes: Some(Bytes::from(bytes)),
-                    is_slim,
-                    has_custom: true,
-                });
-            }
+        let uuid = &keys.uuid;
+        if uuid.is_empty() {
+            return Ok(CustomSkinData {
+                uuid: String::new(),
+                has_custom: false,
+                bytes: None,
+                is_slim: false,
+            });
         }
 
-        Ok(CustomSkinData::default())
+        let skin_path = skin_file_path(uuid).map_err(|e| e.to_string())?;
+        let meta_path = skin_meta_path(uuid).map_err(|e| e.to_string())?;
+
+        if !skin_path.exists() {
+            return Ok(CustomSkinData {
+                uuid: uuid.clone(),
+                has_custom: false,
+                bytes: None,
+                is_slim: false,
+            });
+        }
+
+        let bytes = polyio::read(&skin_path)
+            .await
+            .map_err(|e| format!("Failed to read custom skin: {e}"))?;
+
+        let is_slim = if meta_path.exists() {
+            polyio::read_to_string(&meta_path)
+                .await
+                .ok()
+                .and_then(|s| serde_json::from_str::<SkinMetadata>(&s).ok())
+                .map(|m| m.is_slim)
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        Ok(CustomSkinData {
+            uuid: uuid.clone(),
+            has_custom: true,
+            bytes: Some(Bytes::from(bytes)),
+            is_slim,
+        })
     }
 }
 
@@ -94,8 +112,8 @@ pub fn use_player_skin(uuid: String) -> (Bytes, bool) {
 
     let skin_query = super::use_cached_image(skin_url.clone(), 256);
 
-    let steve = use_memo(|| AppAssets::get_bytes("steve.png").unwrap_or_default());
-    let alex = use_memo(|| AppAssets::get_bytes("alex.png").unwrap_or_default());
+    let steve = AppAssets::get_bytes("steve.png").unwrap_or_default();
+    let alex = AppAssets::get_bytes("alex.png").unwrap_or_default();
 
     let default_slim = (java_string_hash(&uuid) & 1) == 1;
 
@@ -109,8 +127,8 @@ pub fn use_player_skin(uuid: String) -> (Bytes, bool) {
 
     match crate::hooks::loaded_image(skin_url.as_deref(), &skin_query) {
         Some((_, bytes)) => (bytes, is_slim),
-        None if default_slim => (alex.read().clone(), true),
-        None => (steve.read().clone(), false),
+        None if default_slim => (alex, true),
+        None => (steve, false),
     }
 }
 
@@ -128,121 +146,191 @@ pub async fn save_account_skin(
     skin_bytes: &[u8],
     is_slim: bool,
 ) -> Result<(), String> {
+    let skins_folder = skins_dir().map_err(|e| e.to_string())?;
+    polyio::create_dir_all(&skins_folder)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let skin_path = skin_file_path(uuid).map_err(|e| e.to_string())?;
+    let meta_path = skin_meta_path(uuid).map_err(|e| e.to_string())?;
+
     let img = image::load_from_memory(skin_bytes)
-        .map_err(|e| format!("Invalid skin image format: {e}"))?;
+        .map_err(|e| format!("Invalid image format: {e}"))?
+        .to_rgba8();
+
     let (w, h) = (img.width(), img.height());
 
-    let processed_bytes = if (w == 64 && h == 64) || (w == 128 && h == 128) {
-        skin_bytes.to_vec()
-    } else if w == 64 && h == 32 {
-        let rgba = img.to_rgba8();
-        let mut modern = image::RgbaImage::new(64, 64);
-        image::imageops::overlay(&mut modern, &rgba, 0, 0);
-        let mut out = Vec::new();
-        let mut cursor = std::io::Cursor::new(&mut out);
-        modern
-            .write_to(&mut cursor, image::ImageFormat::Png)
-            .map_err(|e| e.to_string())?;
-        out
+    let normalized_img = if w == 64 && h == 32 {
+        let mut new_img = image::RgbaImage::new(64, 64);
+        image::imageops::overlay(&mut new_img, &img, 0, 0);
+        new_img
+    } else if w == 64 && h == 64 {
+        img
     } else {
         return Err(format!(
-            "Invalid dimensions ({w}x{h}). Minecraft skins must be 64x64 or 64x32 PNG."
+            "Invalid Minecraft skin dimensions: {w}x{h}. Must be 64x64 or 64x32."
         ));
     };
 
-    let skins_dir = oneclient_common::paths::skins_dir().map_err(|e| e.to_string())?;
-    polyio::create_dir_all(&skins_dir)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut png_bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    normalized_img
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to encode PNG: {e}"))?;
 
-    let skin_path = oneclient_common::paths::skin_file_path(uuid).map_err(|e| e.to_string())?;
-    polyio::write(&skin_path, &processed_bytes)
+    polyio::write(&skin_path, &png_bytes)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to write skin file: {e}"))?;
 
-    let meta_path = oneclient_common::paths::skin_meta_path(uuid).map_err(|e| e.to_string())?;
     let meta = SkinMetadata { is_slim };
-    let meta_json = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
-    polyio::write(&meta_path, &meta_json)
+    let meta_json = serde_json::to_string_pretty(&meta)
+        .map_err(|e| format!("Failed to serialize metadata: {e}"))?;
+
+    polyio::write(&meta_path, meta_json.as_bytes())
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Failed to write skin metadata: {e}"))?;
 
-    invalidate_skin_queries(Some(uuid)).await;
-
-    // Sync to CustomSkinLoader directory if username is provided
     if let Some(uname) = username {
-        if let Ok(dot_mc) = oneclient_common::paths::shared_minecraft_dir() {
-            let csl_dir = dot_mc.join("CustomSkinLoader").join("skins");
-            if polyio::create_dir_all(&csl_dir).await.is_ok() {
-                let _ = polyio::write(csl_dir.join(format!("{uname}.png")), &processed_bytes).await;
-            }
+        if !uname.is_empty() {
+            let _ = sync_custom_skin_loader(uname, &png_bytes).await;
         }
     }
+
+    invalidate_skin_queries(Some(uuid)).await;
 
     Ok(())
 }
 
 pub async fn delete_account_skin(uuid: &str, username: Option<&str>) -> Result<(), String> {
-    if let Ok(skin_path) = oneclient_common::paths::skin_file_path(uuid) {
-        let _ = polyio::remove_file(skin_path).await;
+    let skin_path = skin_file_path(uuid).map_err(|e| e.to_string())?;
+    let meta_path = skin_meta_path(uuid).map_err(|e| e.to_string())?;
+
+    if skin_path.exists() {
+        let _ = polyio::remove_file(&skin_path).await;
     }
-    if let Ok(meta_path) = oneclient_common::paths::skin_meta_path(uuid) {
-        let _ = polyio::remove_file(meta_path).await;
+    if meta_path.exists() {
+        let _ = polyio::remove_file(&meta_path).await;
     }
+
     if let Some(uname) = username {
-        if let Ok(dot_mc) = oneclient_common::paths::shared_minecraft_dir() {
-            let csl_skin = dot_mc
-                .join("CustomSkinLoader")
-                .join("skins")
-                .join(format!("{uname}.png"));
-            let _ = polyio::remove_file(csl_skin).await;
+        if !uname.is_empty() {
+            let _ = remove_custom_skin_loader(uname).await;
         }
     }
+
     invalidate_skin_queries(Some(uuid)).await;
+
+    Ok(())
+}
+
+async fn sync_custom_skin_loader(username: &str, skin_png: &[u8]) -> Result<(), String> {
+    if let Ok(mc_dir) = shared_minecraft_dir() {
+        let csl_skins_dir = mc_dir.join("CustomSkinLoader").join("skins");
+        let _ = polyio::create_dir_all(&csl_skins_dir).await;
+        let target = csl_skins_dir.join(format!("{username}.png"));
+        let _ = polyio::write(&target, skin_png).await;
+    }
+    Ok(())
+}
+
+async fn remove_custom_skin_loader(username: &str) -> Result<(), String> {
+    if let Ok(mc_dir) = shared_minecraft_dir() {
+        let target = mc_dir
+            .join("CustomSkinLoader")
+            .join("skins")
+            .join(format!("{username}.png"));
+        if target.exists() {
+            let _ = polyio::remove_file(&target).await;
+        }
+    }
     Ok(())
 }
 
 pub async fn fetch_skin_online(query: &str) -> Result<(Vec<u8>, bool), String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("Input is empty".to_string());
+    }
+
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .user_agent("OneLauncher-Cracked/2.2.3")
         .build()
         .map_err(|e| e.to_string())?;
 
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return Err("Please enter a username or skin URL".to_string());
+    if query.starts_with("http://") || query.starts_with("https://") {
+        let resp = client
+            .get(query)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download skin URL: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Download failed with status {}", resp.status()));
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read response bytes: {e}"))?
+            .to_vec();
+
+        return Ok((bytes, false));
     }
 
-    let url = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else {
-        format!("https://minotar.net/skin/{trimmed}")
-    };
-
+    let minotar_url = format!("https://minotar.net/skin/{query}");
     let resp = client
-        .get(&url)
+        .get(&minotar_url)
         .send()
         .await
-        .map_err(|e| format!("Failed to download skin: {e}"))?;
+        .map_err(|e| format!("Failed to reach skin server: {e}"))?;
 
-    if !resp.status().is_success() {
-        if !trimmed.starts_with("http") {
-            let mineskin_url = format!("https://mineskin.eu/skin/{trimmed}");
-            if let Ok(m_resp) = client.get(&mineskin_url).send().await {
-                if m_resp.status().is_success() {
-                    if let Ok(bytes) = m_resp.bytes().await {
-                        let is_slim = (java_string_hash(trimmed) & 1) == 1;
-                        return Ok((bytes.to_vec(), is_slim));
-                    }
-                }
-            }
-        }
-        return Err(format!("Could not find skin for \"{trimmed}\""));
+    if resp.status().is_success() {
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read bytes: {e}"))?
+            .to_vec();
+        return Ok((bytes, false));
     }
 
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    let _ = image::load_from_memory(&bytes)
-        .map_err(|e| format!("Downloaded file is not a valid image: {e}"))?;
-    let is_slim = (java_string_hash(trimmed) & 1) == 1;
-    Ok((bytes.to_vec(), is_slim))
+    let mojang_uuid_url =
+        format!("https://api.mojang.com/users/profiles/minecraft/{query}");
+    let resp = client
+        .get(&mojang_uuid_url)
+        .send()
+        .await
+        .map_err(|e| format!("Mojang lookup failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Player \"{query}\" not found"));
+    }
+
+    #[derive(Deserialize)]
+    struct MojangProfile {
+        id: String,
+    }
+
+    let profile: MojangProfile = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid profile response: {e}"))?;
+
+    let crafatar_url = format!("https://crafatar.com/skins/{}", profile.id);
+    let skin_resp = client
+        .get(&crafatar_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch skin: {e}"))?;
+
+    if !skin_resp.status().is_success() {
+        return Err(format!("Could not fetch skin texture for \"{query}\""));
+    }
+
+    let bytes = skin_resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read skin bytes: {e}"))?
+        .to_vec();
+
+    Ok((bytes, false))
 }

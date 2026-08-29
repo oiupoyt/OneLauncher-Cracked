@@ -78,6 +78,10 @@ impl PlayerModel {
 }
 
 impl Component for PlayerModel {
+    fn render_key(&self) -> DiffKey {
+        DiffKey::from(&self.uuid)
+    }
+
     fn render(&self) -> impl IntoElement {
         let (skin_bytes, is_slim) = use_player_skin(self.uuid.clone());
 
