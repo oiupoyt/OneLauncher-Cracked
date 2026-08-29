@@ -8,11 +8,9 @@ use crate::{
     Route,
     components::{Avatar, Icon, IconType},
     hooks::{
-        settled_or_loading, try_default_account, use_active_cluster_id, use_clusters,
-        use_current_account, use_dispatch, use_notifications_snapshot,
+        try_default_account, use_current_account, use_dispatch, use_notifications_snapshot,
     },
     theme,
-    utils::sort_clusters_for_home,
 };
 
 const NAVBAR_INTRO_MS: u64 = 460;
@@ -47,8 +45,8 @@ impl Component for Navbar {
                     .padding(Gaps::new_symmetric(0.0, 40.0))
                     .offset_y(slide)
                     .opacity(eased)
-                    .child(navbar_left())
-                    .child(navbar_center())
+                    .child(NavbarLeft)
+                    .child(NavbarCenter)
                     .child(NavbarRight),
             )
             .child(
@@ -61,83 +59,65 @@ impl Component for Navbar {
     }
 }
 
-fn navbar_left() -> impl IntoElement {
-    rect()
-        .horizontal()
-        .width(Size::flex(1.0))
-        .cross_align(Alignment::Center)
-        .child(navbar_logo())
+#[derive(PartialEq)]
+struct NavbarLeft;
+
+impl Component for NavbarLeft {
+    fn render(&self) -> impl IntoElement {
+        let logo_bytes = crate::AppAssets::get_bytes("logo.svg").unwrap_or_default();
+
+        rect()
+            .horizontal()
+            .width(Size::flex(1.0))
+            .cross_align(Alignment::Center)
+            .child(
+                SvgViewer::new(("logo.svg", logo_bytes))
+                    .show_loader(false)
+                    .height(Size::px(44.))
+                    .width(Size::px(214.))
+                    .color(theme::colors::fg_primary()),
+            )
+    }
 }
 
-fn navbar_logo() -> impl IntoElement {
-    let bytes = use_memo(|| crate::AppAssets::get_bytes("logo.svg").unwrap_or_default());
+#[derive(PartialEq)]
+struct NavbarCenter;
 
-    SvgViewer::new(("logo.svg", bytes.read().cloned()))
-        .show_loader(false)
-        .height(Size::px(44.))
-        .width(Size::px(214.))
-        .color(theme::colors::fg_primary())
-}
+impl Component for NavbarCenter {
+    fn render(&self) -> impl IntoElement {
+        let route = use_route::<Route>();
 
-fn navbar_center() -> impl IntoElement {
-    let route = use_route::<Route>();
-    let browse_target = browse_target();
-
-    rect()
-        .horizontal()
-        .width(Size::flex(1.0))
-        .main_align(Alignment::Center)
-        .cross_align(Alignment::Center)
-        .spacing(36.)
-        .child(NavLink {
-            active: route == Route::Home {},
-            target: NavTarget::Route(Route::Home {}),
-            nav_label: "Home",
-        })
-        .child(NavLink {
-            active: route == Route::Clusters {},
-            target: NavTarget::Route(Route::Clusters {}),
-            nav_label: "Versions",
-        })
-        .child(NavLink {
-            active: route == Route::AccountSkins {},
-            target: NavTarget::Route(Route::AccountSkins {}),
-            nav_label: "Skins",
-        })
-        .child(NavLink {
-            active: matches!(
-                route,
-                Route::Browser {
-                    pick_cluster: true,
-                    ..
-                }
-            ),
-            target: NavTarget::Route(browse_target),
-            nav_label: "Browse",
-        })
-        .child(NavLink {
-            active: route == Route::Stats {},
-            target: NavTarget::Route(Route::Stats {}),
-            nav_label: "Stats",
-        })
-}
-
-/// Falls back active cluster then most recently played then Versions when none exist
-fn browse_target() -> Route {
-    let clusters = settled_or_loading(&use_clusters()).unwrap_or_default();
-    let active = *use_active_cluster_id().read();
-
-    let cluster_id = active
-        .filter(|id| clusters.iter().any(|cluster| cluster.id == *id))
-        .or_else(|| sort_clusters_for_home(clusters).first().map(|c| c.id));
-
-    match cluster_id {
-        Some(cluster_id) => Route::Browser {
-            cluster_id,
-            package_type: "mod".to_string(),
-            pick_cluster: true,
-        },
-        None => Route::Clusters {},
+        rect()
+            .horizontal()
+            .width(Size::flex(1.0))
+            .main_align(Alignment::Center)
+            .cross_align(Alignment::Center)
+            .spacing(36.)
+            .child(NavLink {
+                active: route == Route::Home {},
+                target: NavTarget::Route(Route::Home {}),
+                nav_label: "Home",
+            })
+            .child(NavLink {
+                active: route == Route::Clusters {},
+                target: NavTarget::Route(Route::Clusters {}),
+                nav_label: "Versions",
+            })
+            .child(NavLink {
+                active: route == Route::AccountSkins {},
+                target: NavTarget::Route(Route::AccountSkins {}),
+                nav_label: "Skins",
+            })
+            .child(NavLink {
+                active: matches!(route, Route::Browser { .. }),
+                target: NavTarget::Route(Route::Clusters {}),
+                nav_label: "Browse",
+            })
+            .child(NavLink {
+                active: route == Route::Stats {},
+                target: NavTarget::Route(Route::Stats {}),
+                nav_label: "Stats",
+            })
     }
 }
 

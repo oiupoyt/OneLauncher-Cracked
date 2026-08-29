@@ -275,30 +275,6 @@ pub struct HomeArtPrefetch;
 
 impl Component for HomeArtPrefetch {
     fn render(&self) -> impl IntoElement {
-        // Before the launcher is ready every query errors and a settled error is not
-        // retried until a new subscriber mounts
-        if !use_launcher().ready {
-            return rect().into_element();
-        }
-        HomeArtWarm.into_element()
-    }
-}
-
-#[derive(PartialEq, Clone, Copy)]
-struct HomeArtWarm;
-
-impl Component for HomeArtWarm {
-    fn render(&self) -> impl IntoElement {
-        let clusters_query = use_clusters();
-        let art = {
-            let reader = clusters_query.read();
-            let state = reader.state();
-            // No active cluster this early so this picks the same one `AppHomeBackground` will
-            let clusters = state.ok().map_or(&[][..], Vec::as_slice);
-            home_art(home_cluster(clusters, None))
-        };
-        let _ = art.use_bytes();
-
         rect().into_element()
     }
 }
