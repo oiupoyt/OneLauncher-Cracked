@@ -73,10 +73,6 @@ pub fn java_dir() -> PathsResult<PathBuf> {
     Ok(launcher_dir()?.join("metadata").join("java"))
 }
 
-pub fn authlib_injector_path() -> PathsResult<PathBuf> {
-    Ok(launcher_dir()?.join("metadata").join("authlib-injector.jar"))
-}
-
 pub fn clusters_dir() -> PathsResult<PathBuf> {
     Ok(launcher_dir()?.join("clusters"))
 }

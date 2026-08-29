@@ -263,7 +263,7 @@ pub async fn launch_cluster(
         updated,
     )?;
 
-    let mut jvm_args = arguments::java_arguments(
+    let jvm_args = arguments::java_arguments(
         updated,
         arg_map.get(&ArgumentType::Jvm).map(Vec::as_slice),
         &natives,
@@ -276,21 +276,9 @@ pub async fn launch_cluster(
         java.major,
     )?;
 
-    // Integrate Offline Skin System (Authlib-Injector + Local Skin Server + Mod Folder Sync)
-    let account_uuid_str = account.id.to_string();
-    crate::game::skin_server::sync_offline_skins(&cwd, &account_uuid_str, &account.username).await;
-
-    if let Ok(port) = crate::game::skin_server::ensure_skin_server().await {
-        if let Ok(injector_jar) = crate::game::skin_server::prepare_authlib_injector().await {
-            let agent_arg = format!(
-                "-javaagent:{}={}",
-                injector_jar.display(),
-                format!("http://127.0.0.1:{port}")
-            );
-            tracing::info!(%agent_arg, "attaching authlib-injector for offline skin support");
-            jvm_args.push(agent_arg);
-        }
-    }
+    // Inject custom skin as a resource pack that overrides the default Steve/Alex texture.
+    // This is zero-overhead: no agents, no servers — just files on disk that Minecraft reads.
+    inject_skin_resource_pack(&cwd, &account.id.to_string()).await;
 
     let mut mc_args = arguments::minecraft_arguments(
         updated,
@@ -692,5 +680,134 @@ async fn run_hook(hook: Option<&str>, cwd: &Path) {
     command.current_dir(cwd);
     if let Err(err) = command.status().await {
         tracing::warn!("hook '{hook}' failed: {err}");
+    }
+}
+
+/// Creates (or updates) a `onelauncher_skin` resource pack in the game directory that
+/// overrides `assets/minecraft/textures/entity/player/wide/steve.png` (and the slim variant)
+/// with the player's saved custom skin PNG. Also patches `options.txt` to enable the pack.
+///
+/// If the player has no custom skin, the pack folder and `options.txt` entry are cleaned up.
+async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str) {
+    const PACK_NAME: &str = "onelauncher_skin";
+
+    let resourcepacks_dir = game_dir.join("resourcepacks");
+    let pack_dir = resourcepacks_dir.join(PACK_NAME);
+    let textures_wide = pack_dir
+        .join("assets/minecraft/textures/entity/player/wide");
+    let textures_slim = pack_dir
+        .join("assets/minecraft/textures/entity/player/slim");
+    let options_txt = game_dir.join("options.txt");
+
+    // --- Resolve skin PNG + slim flag ---
+    let skin_path = match oneclient_common::paths::skin_file_path(uuid) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("could not resolve skin path for {uuid}: {e}");
+            return;
+        }
+    };
+
+    if !skin_path.exists() {
+        // No custom skin — remove the pack dir and strip from options.txt so Minecraft
+        // falls back to its built-in default Steve/Alex.
+        if pack_dir.exists() {
+            let _ = polyio::remove_dir_all(&pack_dir).await;
+            patch_resource_packs_option(&options_txt, PACK_NAME, false).await;
+        }
+        return;
+    }
+
+    let skin_bytes = match polyio::read(&skin_path).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("failed to read custom skin: {e}");
+            return;
+        }
+    };
+
+    let meta_path = match oneclient_common::paths::skin_meta_path(uuid) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    #[derive(serde::Deserialize)]
+    struct SkinMeta { is_slim: bool }
+    let is_slim = polyio::read_to_string(&meta_path)
+        .await
+        .ok()
+        .and_then(|s| serde_json::from_str::<SkinMeta>(&s).ok())
+        .map(|m| m.is_slim)
+        .unwrap_or(false);
+
+    // --- Write resource pack ---
+    let _ = polyio::create_dir_all(&textures_wide).await;
+    let _ = polyio::create_dir_all(&textures_slim).await;
+
+    // Write to both models so the skin works regardless of the UUID-based default.
+    let wide_png = textures_wide.join("steve.png");
+    let slim_png = textures_slim.join("alex.png");
+    if let Err(e) = polyio::write(&wide_png, &skin_bytes).await {
+        tracing::warn!("failed to write wide skin texture: {e}");
+        return;
+    }
+    if let Err(e) = polyio::write(&slim_png, &skin_bytes).await {
+        tracing::warn!("failed to write slim skin texture: {e}");
+        return;
+    }
+
+    // pack.mcmeta — supported_formats covers all known MC releases
+    let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher custom skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
+    let _ = polyio::write(pack_dir.join("pack.mcmeta"), mcmeta.as_bytes()).await;
+
+    let _ = is_slim; // logged below; both textures are written regardless
+    tracing::debug!(uuid, is_slim, "skin resource pack written");
+
+    // --- Patch options.txt ---
+    patch_resource_packs_option(&options_txt, PACK_NAME, true).await;
+}
+
+/// Reads `options.txt`, adds or removes `"file/<name>"` from the `resourcePacks` list,
+/// and writes it back. Safe to call even if `options.txt` does not yet exist.
+async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable: bool) {
+    let file_entry = format!("\"file/{pack_name}\"");
+
+    let content = polyio::read_to_string(options_txt)
+        .await
+        .unwrap_or_default();
+
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+
+    // Find existing resourcePacks line or remember we need to add one.
+    let mut found = false;
+    for line in &mut lines {
+        if !line.starts_with("resourcePacks:") {
+            continue;
+        }
+        found = true;
+
+        // Parse the JSON array value after the colon.
+        let raw = line.trim_start_matches("resourcePacks:").trim();
+        let mut packs: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
+
+        packs.retain(|p| p != &file_entry);
+        if enable {
+            packs.push(file_entry.clone());
+        }
+
+        *line = format!(
+            "resourcePacks:{}",
+            serde_json::to_string(&packs).unwrap_or_else(|_| "[]".to_string())
+        );
+        break;
+    }
+
+    if !found && enable {
+        lines.push(format!("resourcePacks:[{file_entry}]"));
+    }
+
+    let new_content = lines.join("\n") + "\n";
+    if let Err(e) = polyio::write(options_txt, new_content.as_bytes()).await {
+        tracing::warn!("failed to patch options.txt: {e}");
     }
 }
