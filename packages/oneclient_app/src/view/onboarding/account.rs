@@ -130,10 +130,11 @@ impl Component for OnboardingAccount {
 
         let add_offline_nav = add_offline.clone();
         let offline_name_nav = offline_name.clone();
+        let is_editing_nav = is_editing.clone();
         let account_clone = account.clone();
 
         let on_next = move |_| {
-            if account_clone.is_none() {
+            if account_clone.is_none() || *is_editing_nav.read() {
                 let name_val = offline_name_nav.read().trim().to_string();
                 let target = if name_val.is_empty() {
                     "Player".to_string()

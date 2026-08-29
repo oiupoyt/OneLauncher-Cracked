@@ -109,9 +109,7 @@ impl CredentialsStore {
                 .find(|u| u.username.eq_ignore_ascii_case(&username))
                 .cloned()
             {
-                if self.default_user.is_none() {
-                    self.default_user = Some(existing.id);
-                }
+                self.default_user = Some(existing.id);
                 return Ok(existing);
             }
         }
@@ -119,9 +117,7 @@ impl CredentialsStore {
         let account = offline_account(username);
         let id = account.id;
         self.users.insert(id, account.clone());
-        if self.default_user.is_none() {
-            self.default_user = Some(id);
-        }
+        self.default_user = Some(id);
         Ok(account)
     }
 
@@ -203,4 +199,51 @@ pub(crate) fn is_transient_auth_error(err: &AuthError) -> bool {
         AuthError::Minecraft(crate::error::MinecraftAuthError::RequestError { source, .. })
             if source.is_connect() || source.is_timeout()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_offline_account_creation_sets_default() {
+        let mut store = CredentialsStore {
+            users: HashMap::new(),
+            default_user: None,
+        };
+
+        let account = store.insert_offline_account("Player".to_string()).unwrap();
+        assert_eq!(account.username, "Player");
+        assert_eq!(store.default_user, Some(account.id));
+        assert_eq!(store.users.len(), 1);
+    }
+
+    #[test]
+    fn test_custom_username_switches_default() {
+        let mut store = CredentialsStore {
+            users: HashMap::new(),
+            default_user: None,
+        };
+
+        let p1 = store.insert_offline_account("Player".to_string()).unwrap();
+        assert_eq!(store.default_user, Some(p1.id));
+
+        let p2 = store.insert_offline_account("Steve".to_string()).unwrap();
+        assert_eq!(store.default_user, Some(p2.id));
+        assert_eq!(store.users.len(), 2);
+    }
+
+    #[test]
+    fn test_case_insensitive_username_reuse() {
+        let mut store = CredentialsStore {
+            users: HashMap::new(),
+            default_user: None,
+        };
+
+        let p1 = store.insert_offline_account("Steve".to_string()).unwrap();
+        let p2 = store.insert_offline_account("steve".to_string()).unwrap();
+        assert_eq!(p1.id, p2.id);
+        assert_eq!(store.users.len(), 1);
+        assert_eq!(store.default_user, Some(p1.id));
+    }
 }
