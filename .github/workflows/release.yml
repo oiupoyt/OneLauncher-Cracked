@@ -94,13 +94,20 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.name }}
+          if-no-files-found: warn
           path: |
             target/${{ matrix.target }}/release/*.deb
             target/${{ matrix.target }}/release/*.AppImage
             target/${{ matrix.target }}/release/*.dmg
             target/${{ matrix.target }}/release/*-setup.exe
+            target/${{ matrix.target }}/release/oneclient_app.exe
+            target/${{ matrix.target }}/release/oneclient_app
             target/${{ matrix.target }}/generate-rpm/*.rpm
             target/generate-rpm/*.rpm
+            target/release/*.deb
+            target/release/*.AppImage
+            target/release/*.dmg
+            target/release/*-setup.exe
 
   create-release:
     needs: build
@@ -117,6 +124,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ./artifacts/**/*
+          tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
+          make_latest: true
+
