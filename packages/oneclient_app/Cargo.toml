@@ -45,8 +45,8 @@ regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest.workspace = true
+futures-util = { workspace = true, features = ["std"] }
 
-cargo-packager-updater = "=0.2.3"
 
 rfd = "=0.17.2"
 open = "=5.4.0"
