@@ -73,8 +73,8 @@ impl Component for PreviewPanel {
         let account_uuid = self.account_uuid.clone();
         let custom_query = use_custom_skin(account_uuid.clone().unwrap_or_default());
         let custom_data = crate::hooks::settled_or_loading(&custom_query);
-        let is_slim = custom_data.as_ref().map_or(false, |d| d.is_slim);
-        let has_custom = custom_data.as_ref().map_or(false, |d| d.has_custom);
+        let is_slim = custom_data.as_ref().is_some_and(|d| d.is_slim);
+        let has_custom = custom_data.as_ref().is_some_and(|d| d.has_custom);
 
         let acc_id_copy = self.account_id;
         let username_copy = self.username.clone();

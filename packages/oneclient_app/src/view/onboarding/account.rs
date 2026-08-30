@@ -57,9 +57,9 @@ impl Component for OnboardingAccount {
             ))
             .child(if show_entry {
                 let start = msa.clone();
-                let add_offline_click = add_offline.clone();
-                let mut is_editing_save = is_editing.clone();
-                let offline_name_read = offline_name.clone();
+                let add_offline_click = add_offline;
+                let mut is_editing_save = is_editing;
+                let offline_name_read = offline_name;
 
                 rect()
                     .vertical()
@@ -81,7 +81,7 @@ impl Component for OnboardingAccount {
                                     .spacing(8.)
                                     .cross_align(Alignment::Center)
                                     .child(
-                                        TextInput::new(offline_name.clone())
+                                        TextInput::new(offline_name)
                                             .placeholder("Enter username (e.g. Steve)")
                                             .width(Size::px(240.)),
                                     )
@@ -123,7 +123,7 @@ impl Component for OnboardingAccount {
                     }))
                     .into_element()
             } else {
-                let mut is_editing_toggle = is_editing.clone();
+                let mut is_editing_toggle = is_editing;
                 let account = account.as_ref().unwrap();
 
                 rect()
@@ -147,10 +147,10 @@ impl Component for OnboardingAccount {
             })
             .into_element();
 
-        let add_offline_nav = add_offline.clone();
-        let offline_name_nav = offline_name.clone();
-        let is_editing_nav = is_editing.clone();
-        let mut is_navigating_nav = is_navigating.clone();
+        let add_offline_nav = add_offline;
+        let offline_name_nav = offline_name;
+        let is_editing_nav = is_editing;
+        let mut is_navigating_nav = is_navigating;
         let account_clone = account.clone();
 
         let on_next = move |_| {

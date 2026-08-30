@@ -98,20 +98,14 @@ impl CredentialsStore {
     fn insert_offline_account(&mut self, username: String) -> AuthResult<MinecraftAccount> {
         validate_offline_username(&username)?;
 
-        if self
+        if let Some(existing) = self
             .users
             .values()
-            .any(|u| u.username.eq_ignore_ascii_case(&username))
+            .find(|u| u.username.eq_ignore_ascii_case(&username))
+            .cloned()
         {
-            if let Some(existing) = self
-                .users
-                .values()
-                .find(|u| u.username.eq_ignore_ascii_case(&username))
-                .cloned()
-            {
-                self.default_user = Some(existing.id);
-                return Ok(existing);
-            }
+            self.default_user = Some(existing.id);
+            return Ok(existing);
         }
 
         let account = offline_account(username);

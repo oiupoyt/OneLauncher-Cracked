@@ -69,12 +69,8 @@ fn get_or_compose_head(skin_bytes: &Bytes) -> Option<ImageHandle> {
     }
     let src_ptr = skin_bytes.as_ptr() as usize;
     let cache = AVATAR_HEAD_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    {
-        if let Ok(guard) = cache.lock() {
-            if let Some(handle) = guard.get(&src_ptr) {
-                return Some(handle.clone());
-            }
-        }
+    if let Some(handle) = cache.lock().ok().and_then(|g| g.get(&src_ptr).cloned()) {
+        return Some(handle);
     }
 
     let composed = compose_head(skin_bytes)?;

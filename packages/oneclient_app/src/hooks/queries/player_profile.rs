@@ -28,7 +28,8 @@ impl QueryCapability for FetchPlayerProfileQuery {
         }
 
         if let Ok(u) = uuid::Uuid::parse_str(uuid_str) {
-            if u.get_version() == Some(uuid::Version::Md5) || u.is_nil() {
+            let is_offline = u.get_version() == Some(uuid::Version::Md5) || u.is_nil();
+            if is_offline {
                 return Ok(PlayerProfileView {
                     uuid: uuid_str.clone(),
                     ..Default::default()

@@ -789,20 +789,18 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) 
     }
 
     // Also sync to shared .minecraft if distinct from game_dir
-    if let Ok(shared) = oneclient_common::paths::shared_minecraft_dir() {
-        if shared != game_dir {
-            let shared_targets = [
-                shared.join("CustomSkinLoader").join("skins").join(format!("{username}.png")),
-                shared.join("CustomSkinLoader").join("skins").join(format!("{uuid}.png")),
-                shared.join("config").join("offlineskins").join(format!("{username}.png")),
-                shared.join("config").join("offlineskins").join(format!("{uuid}.png")),
-            ];
-            for target in shared_targets {
-                if let Some(parent) = target.parent() {
-                    let _ = polyio::create_dir_all(parent).await;
-                }
-                let _ = polyio::write(&target, &skin_bytes).await;
+    if let Some(shared) = oneclient_common::paths::shared_minecraft_dir().ok().filter(|s| s != game_dir) {
+        let shared_targets = [
+            shared.join("CustomSkinLoader").join("skins").join(format!("{username}.png")),
+            shared.join("CustomSkinLoader").join("skins").join(format!("{uuid}.png")),
+            shared.join("config").join("offlineskins").join(format!("{username}.png")),
+            shared.join("config").join("offlineskins").join(format!("{uuid}.png")),
+        ];
+        for target in shared_targets {
+            if let Some(parent) = target.parent() {
+                let _ = polyio::create_dir_all(parent).await;
             }
+            let _ = polyio::write(&target, &skin_bytes).await;
         }
     }
 

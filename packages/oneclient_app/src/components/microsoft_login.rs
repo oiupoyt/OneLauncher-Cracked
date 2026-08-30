@@ -461,9 +461,8 @@ fn offline_mode_dialog_body(on_close: impl FnMut() + Clone + 'static) -> impl In
                     let mut close_cb = on_close_btn.clone();
                     spawn(async move {
                         if let Ok(state) = crate::launcher::state() {
-                            if let Ok(acc) =
-                                state.auth.add_offline_account("Player".to_string()).await
-                            {
+                            let res = state.auth.add_offline_account("Player".to_string()).await;
+                            if let Ok(acc) = res {
                                 let _ = state.auth.set_default_account(Some(acc.id)).await;
                             }
                         }

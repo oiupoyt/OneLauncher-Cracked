@@ -117,12 +117,11 @@ pub fn use_player_skin(uuid: String) -> (Bytes, bool) {
 
     let default_slim = (java_string_hash(&uuid) & 1) == 1;
 
-    if let Some(custom) = custom_data {
-        if custom.has_custom {
-            if let Some(bytes) = custom.bytes {
-                return (bytes, custom.is_slim);
-            }
-        }
+    if let Some((bytes, is_slim)) = custom_data
+        .filter(|c| c.has_custom)
+        .and_then(|c| c.bytes.map(|b| (b, c.is_slim)))
+    {
+        return (bytes, is_slim);
     }
 
     match crate::hooks::loaded_image(skin_url.as_deref(), &skin_query) {
@@ -190,10 +189,8 @@ pub async fn save_account_skin(
         .await
         .map_err(|e| format!("Failed to write skin metadata: {e}"))?;
 
-    if let Some(uname) = username {
-        if !uname.is_empty() {
-            let _ = sync_custom_skin_loader(uname, &png_bytes).await;
-        }
+    if let Some(uname) = username.filter(|u| !u.is_empty()) {
+        let _ = sync_custom_skin_loader(uname, &png_bytes).await;
     }
 
     invalidate_skin_queries(Some(uuid)).await;
@@ -212,10 +209,8 @@ pub async fn delete_account_skin(uuid: &str, username: Option<&str>) -> Result<(
         let _ = polyio::remove_file(&meta_path).await;
     }
 
-    if let Some(uname) = username {
-        if !uname.is_empty() {
-            let _ = remove_custom_skin_loader(uname).await;
-        }
+    if let Some(uname) = username.filter(|u| !u.is_empty()) {
+        let _ = remove_custom_skin_loader(uname).await;
     }
 
     invalidate_skin_queries(Some(uuid)).await;

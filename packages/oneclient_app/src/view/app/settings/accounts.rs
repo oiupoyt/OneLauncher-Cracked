@@ -41,7 +41,7 @@ impl Component for SettingsAccounts {
         let username = use_state(String::new);
         let mut show_offline = use_state(|| false);
         let edit_account = use_state(|| None::<(Uuid, String)>);
-        let edit_name = use_state(|| String::new());
+        let edit_name = use_state(String::new);
 
         let accounts = try_accounts(&accounts_query).unwrap_or_default();
         let default_account = try_default_account(&default_query);
@@ -123,7 +123,6 @@ impl Component for SettingsAccounts {
             .maybe_child(edit_account.read().as_ref().map(|(id, _)| {
                 let id = *id;
                 let mut edit_account = edit_account;
-                let edit_name = edit_name;
                 OverlayPopup::new()
                     .on_close(move |()| edit_account.set(None))
                     .child(

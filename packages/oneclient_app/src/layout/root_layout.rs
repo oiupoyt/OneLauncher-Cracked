@@ -40,10 +40,8 @@ impl Component for RootLayout {
                             ctx.windows.get(&id).map(|w| w.window().is_maximized())
                         })
                         .await;
-                    if let Ok(Some(is_max)) = is_max {
-                        if *maximized.peek() != is_max {
-                            maximized.set(is_max);
-                        }
+                    if let Ok(Some(is_max)) = is_max.map(|opt| opt.filter(|&m| *maximized.peek() != m)) {
+                        maximized.set(is_max);
                     }
                 });
             });
