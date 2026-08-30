@@ -682,37 +682,71 @@ async fn run_hook(hook: Option<&str>, cwd: &Path) {
     }
 }
 
-const ALL_DEFAULT_CHARACTERS: &[&str] = &[
-    "steve.png",
-    "alex.png",
-    "ari.png",
-    "efe.png",
-    "kai.png",
-    "makena.png",
-    "noor.png",
-    "sunny.png",
-    "zuri.png",
-];
+/// Computes Java's exact 32-bit signed integer `uuid.hashCode()`.
+fn java_uuid_hash(uuid: &uuid::Uuid) -> i32 {
+    let (most_sig, least_sig) = uuid.as_u64_pair();
+    let hilo = most_sig ^ least_sig;
+    ((hilo >> 32) as i32) ^ (hilo as i32)
+}
 
-/// Computes the target skin paths based on whether the player uses a Slim (Alex) or Classic (Steve) model.
-/// This guarantees 100% skin loading across all modern (1.19.3+) and legacy (1.8-1.19.2) Minecraft versions.
-fn target_skin_paths(is_slim: bool) -> Vec<String> {
-    let mut paths = Vec::new();
-    if is_slim {
-        for name in ALL_DEFAULT_CHARACTERS {
-            paths.push(format!("assets/minecraft/textures/entity/player/slim/{name}"));
-        }
-        paths.push("assets/minecraft/textures/entity/player/alex.png".to_string());
-        paths.push("assets/minecraft/textures/entity/alex.png".to_string());
+/// Computes the exact Minecraft character slot(s) for the player's offline UUID.
+/// Matches vanilla Minecraft's `DefaultPlayerSkin.getDefaultSkin(uuid)` in both
+/// legacy (1.8-1.19.2) and modern (1.19.3+) versions, ensuring only the player's
+/// exact slot is patched while leaving other default character slots untouched in multiplayer.
+fn target_skin_paths_for_account(uuid_str: &str, username: &str) -> (Vec<String>, String, String) {
+    let offline_uuid = if let Ok(u) = uuid::Uuid::parse_str(uuid_str) {
+        u
     } else {
-        for name in ALL_DEFAULT_CHARACTERS {
-            paths.push(format!("assets/minecraft/textures/entity/player/wide/{name}"));
-            paths.push(format!("assets/minecraft/textures/entity/player/{name}"));
-        }
-        paths.push("assets/minecraft/textures/entity/player/steve.png".to_string());
-        paths.push("assets/minecraft/textures/entity/steve.png".to_string());
-    }
-    paths
+        oneclient_auth::offline_uuid(username)
+    };
+
+    let hash = java_uuid_hash(&offline_uuid);
+
+    // 1. Legacy Minecraft 1.8 - 1.19.2: ((hash & 1) != 0) ? alex : steve
+    let is_legacy_alex = (hash & 1) != 0;
+    let legacy_char = if is_legacy_alex { "alex.png" } else { "steve.png" };
+
+    // 2. Modern Minecraft 1.20.2+ (9 default skins)
+    let modern_9 = match hash.rem_euclid(9) {
+        0 => ("wide", "steve.png"),
+        1 => ("slim", "alex.png"),
+        2 => ("slim", "ari.png"),
+        3 => ("wide", "efe.png"),
+        4 => ("wide", "kai.png"),
+        5 => ("wide", "makena.png"),
+        6 => ("slim", "noor.png"),
+        7 => ("wide", "sunny.png"),
+        _ => ("slim", "zuri.png"),
+    };
+
+    // 3. Modern Minecraft 1.19.3 - 1.20.1 (8 default skins)
+    let modern_8 = match hash.rem_euclid(8) {
+        0 => ("wide", "steve.png"),
+        1 => ("slim", "alex.png"),
+        2 => ("slim", "ari.png"),
+        3 => ("wide", "efe.png"),
+        4 => ("wide", "kai.png"),
+        5 => ("wide", "makena.png"),
+        6 => ("slim", "noor.png"),
+        _ => ("wide", "sunny.png"),
+    };
+
+    let mut paths = std::collections::HashSet::new();
+
+    // Legacy paths
+    paths.insert(format!("assets/minecraft/textures/entity/{legacy_char}"));
+    paths.insert(format!("assets/minecraft/textures/entity/player/{legacy_char}"));
+
+    // Modern 9-character paths
+    paths.insert(format!("assets/minecraft/textures/entity/player/{}/{}", modern_9.0, modern_9.1));
+    paths.insert(format!("assets/minecraft/textures/entity/player/{}", modern_9.1));
+
+    // Modern 8-character paths
+    paths.insert(format!("assets/minecraft/textures/entity/player/{}/{}", modern_8.0, modern_8.1));
+    paths.insert(format!("assets/minecraft/textures/entity/player/{}", modern_8.1));
+
+    let path_list: Vec<String> = paths.into_iter().collect();
+    (path_list, modern_9.1.to_string(), legacy_char.to_string())
 }
 
 /// Replaces the default character textures inside the Minecraft client `.jar`,
@@ -766,16 +800,9 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
         }
     };
 
-    let is_slim = oneclient_common::paths::skin_meta_path(uuid)
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("model").and_then(|m| m.as_str().map(|m| m == "slim")))
-        .unwrap_or(false);
+    let (target_paths, modern_char, legacy_char) = target_skin_paths_for_account(uuid, username);
 
-    let target_paths = target_skin_paths(is_slim);
-
-    // 1. Directly patch the client jar for this player's model
+    // 1. Directly patch the client jar for this player's exact character slot
     patch_client_jar_skins(client_jar, Some(&skin_bytes), &target_paths).await;
 
     // 2. Clean previous resource pack directory to avoid stale files
@@ -794,26 +821,17 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
     let _ = polyio::create_dir_all(&textures_player).await;
     let _ = polyio::create_dir_all(&textures_entity).await;
 
-    if is_slim {
-        for name in ALL_DEFAULT_CHARACTERS {
-            let _ = polyio::write(textures_slim.join(name), &skin_bytes).await;
-        }
-        let _ = polyio::write(textures_player.join("alex.png"), &skin_bytes).await;
-        let _ = polyio::write(textures_entity.join("alex.png"), &skin_bytes).await;
-    } else {
-        for name in ALL_DEFAULT_CHARACTERS {
-            let _ = polyio::write(textures_wide.join(name), &skin_bytes).await;
-            let _ = polyio::write(textures_player.join(name), &skin_bytes).await;
-        }
-        let _ = polyio::write(textures_player.join("steve.png"), &skin_bytes).await;
-        let _ = polyio::write(textures_entity.join("steve.png"), &skin_bytes).await;
-    }
+    let _ = polyio::write(textures_wide.join(&modern_char), &skin_bytes).await;
+    let _ = polyio::write(textures_slim.join(&modern_char), &skin_bytes).await;
+    let _ = polyio::write(textures_player.join(&modern_char), &skin_bytes).await;
+    let _ = polyio::write(textures_player.join(&legacy_char), &skin_bytes).await;
+    let _ = polyio::write(textures_entity.join(&legacy_char), &skin_bytes).await;
 
     let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher Custom Skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
     let _ = polyio::write(pack_dir.join("pack.mcmeta"), mcmeta.as_bytes()).await;
 
     // 3. Write zipped resource pack for loaders that only read .zip files
-    write_skin_zip_resource_pack(&pack_zip, &skin_bytes, is_slim).await;
+    write_skin_zip_resource_pack(&pack_zip, &skin_bytes, &target_paths).await;
 
     // 4. Sync to mod directories (CustomSkinLoader, OfflineSkins, etc.) in game_dir
     let mod_targets = [
@@ -854,7 +872,7 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
         write_custom_skin_loader_config(&shared.join("CustomSkinLoader")).await;
     }
 
-    tracing::info!(uuid, username, is_slim, "targeted skin direct injection, resource packs, and mod skins ready");
+    tracing::info!(uuid, username, modern_char, legacy_char, "targeted skin direct injection, resource packs, and mod skins ready");
 
     // 5. Patch options.txt to ensure the resource pack is enabled
     patch_resource_packs_option(&options_txt, PACK_NAME, true).await;
@@ -1012,7 +1030,7 @@ async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>, ta
 }
 
 /// Creates a targeted zipped `.zip` resource pack file.
-async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8], is_slim: bool) {
+async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8], target_paths: &[String]) {
     let out_file = match tokio::fs::File::create(zip_path).await {
         Ok(f) => f,
         Err(_) => return,
@@ -1023,8 +1041,8 @@ async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8], is_sli
     let mcmeta_builder = async_zip::ZipEntryBuilder::new("pack.mcmeta".to_string().into(), async_zip::Compression::Stored);
     let _ = writer.write_entry_whole(mcmeta_builder, mcmeta.as_bytes()).await;
 
-    for path in target_skin_paths(is_slim) {
-        let b = async_zip::ZipEntryBuilder::new(path.into(), async_zip::Compression::Deflate);
+    for path in target_paths {
+        let b = async_zip::ZipEntryBuilder::new(path.clone().into(), async_zip::Compression::Deflate);
         let _ = writer.write_entry_whole(b, skin_bytes).await;
     }
 
@@ -1104,5 +1122,19 @@ async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable
     let new_content = lines.join("\n") + "\n";
     if let Err(e) = polyio::write(options_txt, new_content.as_bytes()).await {
         tracing::warn!("failed to patch options.txt: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_target_skin_paths_for_account() {
+        let (paths, modern, legacy) = target_skin_paths_for_account("c4436573-0477-3e11-97b7-6f7ef57f354f", "oiupoyt");
+        assert!(!paths.is_empty());
+        assert!(!modern.is_empty());
+        assert!(!legacy.is_empty());
+        assert!(paths.iter().any(|p| p.contains(&legacy)));
     }
 }
