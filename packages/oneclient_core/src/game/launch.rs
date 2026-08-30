@@ -682,45 +682,48 @@ async fn run_hook(hook: Option<&str>, cwd: &Path) {
     }
 }
 
-const ALL_DEFAULT_SKIN_FILENAMES: &[&str] = &[
-    "steve.png",
-    "alex.png",
-    "ari.png",
-    "efe.png",
-    "kai.png",
-    "makena.png",
-    "noor.png",
-    "sunny.png",
-    "zuri.png",
-];
+/// Computes the player's specific default character slot based on Java's UUID hash algorithm
+/// (matching vanilla Minecraft's `DefaultPlayerSkin.getDefaultSkin(uuid)`), avoiding blanket skin replacement on multiplayer.
+fn target_skin_paths_for_uuid(uuid_str: &str, is_slim: bool) -> (Vec<String>, &'static str, &'static str) {
+    let hash = if let Ok(parsed) = uuid::Uuid::parse_str(uuid_str) {
+        let (most_sig, least_sig) = parsed.as_u64_pair();
+        let hilo = most_sig ^ least_sig;
+        ((hilo >> 32) as i32) ^ (hilo as i32)
+    } else {
+        0i32
+    };
 
-const DEFAULT_SKIN_PATHS_IN_JAR: &[&str] = &[
-    "assets/minecraft/textures/entity/player/wide/steve.png",
-    "assets/minecraft/textures/entity/player/wide/alex.png",
-    "assets/minecraft/textures/entity/player/wide/ari.png",
-    "assets/minecraft/textures/entity/player/wide/efe.png",
-    "assets/minecraft/textures/entity/player/wide/kai.png",
-    "assets/minecraft/textures/entity/player/wide/makena.png",
-    "assets/minecraft/textures/entity/player/wide/noor.png",
-    "assets/minecraft/textures/entity/player/wide/sunny.png",
-    "assets/minecraft/textures/entity/player/wide/zuri.png",
-    "assets/minecraft/textures/entity/player/slim/steve.png",
-    "assets/minecraft/textures/entity/player/slim/alex.png",
-    "assets/minecraft/textures/entity/player/slim/ari.png",
-    "assets/minecraft/textures/entity/player/slim/efe.png",
-    "assets/minecraft/textures/entity/player/slim/kai.png",
-    "assets/minecraft/textures/entity/player/slim/makena.png",
-    "assets/minecraft/textures/entity/player/slim/noor.png",
-    "assets/minecraft/textures/entity/player/slim/sunny.png",
-    "assets/minecraft/textures/entity/player/slim/zuri.png",
-    "assets/minecraft/textures/entity/player/steve.png",
-    "assets/minecraft/textures/entity/player/alex.png",
-    "assets/minecraft/textures/entity/steve.png",
-    "assets/minecraft/textures/entity/alex.png",
-];
+    let modern_char = match hash.rem_euclid(9) {
+        0 => "steve.png",
+        1 => "alex.png",
+        2 => "ari.png",
+        3 => "efe.png",
+        4 => "kai.png",
+        5 => "makena.png",
+        6 => "noor.png",
+        7 => "sunny.png",
+        _ => "zuri.png",
+    };
 
-/// Replaces default Minecraft character textures directly inside the Minecraft client `.jar`,
-/// creates directory and `.zip` resource packs, and syncs custom skins to mod directories.
+    let legacy_char = if is_slim || (hash & 1 != 0) {
+        "alex.png"
+    } else {
+        "steve.png"
+    };
+
+    let target_paths = vec![
+        format!("assets/minecraft/textures/entity/player/wide/{modern_char}"),
+        format!("assets/minecraft/textures/entity/player/slim/{modern_char}"),
+        format!("assets/minecraft/textures/entity/player/{modern_char}"),
+        format!("assets/minecraft/textures/entity/{legacy_char}"),
+        format!("assets/minecraft/textures/entity/player/{legacy_char}"),
+    ];
+
+    (target_paths, modern_char, legacy_char)
+}
+
+/// Replaces the player's specific default character texture inside the Minecraft client `.jar`,
+/// creates targeted resource packs, and syncs custom skins and configs to mod directories.
 async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &str) {
     const PACK_NAME: &str = "onelauncher_skin";
 
@@ -751,7 +754,7 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
 
     let Some(valid_skin_path) = resolved_skin_path else {
         // No custom skin — restore untouched client jar, remove resource pack files, and clean options.txt
-        patch_client_jar_skins(client_jar, None).await;
+        patch_client_jar_skins(client_jar, None, &[]).await;
         if pack_dir.exists() {
             let _ = polyio::remove_dir_all(&pack_dir).await;
         }
@@ -770,10 +773,24 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
         }
     };
 
-    // 1. Directly patch the client jar so default textures in-game match the skin
-    patch_client_jar_skins(client_jar, Some(&skin_bytes)).await;
+    let is_slim = oneclient_common::paths::skin_meta_path(uuid)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("model").and_then(|m| m.as_str().map(|m| m == "slim")))
+        .unwrap_or(false);
 
-    // 2. Write Resource Pack directory structure
+    let (target_paths, modern_char, legacy_char) = target_skin_paths_for_uuid(uuid, is_slim);
+
+    // 1. Directly patch the client jar for this player's specific character slot only
+    patch_client_jar_skins(client_jar, Some(&skin_bytes), &target_paths).await;
+
+    // 2. Clean previous resource pack directory to avoid stale files from other characters
+    if pack_dir.exists() {
+        let _ = polyio::remove_dir_all(&pack_dir).await;
+    }
+
+    // Write Resource Pack directory structure
     let textures_wide = pack_dir.join("assets/minecraft/textures/entity/player/wide");
     let textures_slim = pack_dir.join("assets/minecraft/textures/entity/player/slim");
     let textures_player = pack_dir.join("assets/minecraft/textures/entity/player");
@@ -784,22 +801,19 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
     let _ = polyio::create_dir_all(&textures_player).await;
     let _ = polyio::create_dir_all(&textures_entity).await;
 
-    for name in ALL_DEFAULT_SKIN_FILENAMES {
-        let _ = polyio::write(textures_wide.join(name), &skin_bytes).await;
-        let _ = polyio::write(textures_slim.join(name), &skin_bytes).await;
-        let _ = polyio::write(textures_player.join(name), &skin_bytes).await;
-    }
-
-    let _ = polyio::write(textures_entity.join("steve.png"), &skin_bytes).await;
-    let _ = polyio::write(textures_entity.join("alex.png"), &skin_bytes).await;
+    let _ = polyio::write(textures_wide.join(modern_char), &skin_bytes).await;
+    let _ = polyio::write(textures_slim.join(modern_char), &skin_bytes).await;
+    let _ = polyio::write(textures_player.join(modern_char), &skin_bytes).await;
+    let _ = polyio::write(textures_player.join(legacy_char), &skin_bytes).await;
+    let _ = polyio::write(textures_entity.join(legacy_char), &skin_bytes).await;
 
     let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher Custom Skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
     let _ = polyio::write(pack_dir.join("pack.mcmeta"), mcmeta.as_bytes()).await;
 
     // 3. Write zipped resource pack for loaders that only read .zip files
-    write_skin_zip_resource_pack(&pack_zip, &skin_bytes).await;
+    write_skin_zip_resource_pack(&pack_zip, &skin_bytes, modern_char, legacy_char).await;
 
-    // 4. Also sync to mod directories (CustomSkinLoader, OfflineSkins, etc.) in game_dir
+    // 4. Sync to mod directories (CustomSkinLoader, OfflineSkins, etc.) in game_dir
     let mod_targets = [
         game_dir.join("CustomSkinLoader").join("skins").join(format!("{username}.png")),
         game_dir.join("CustomSkinLoader").join("skins").join(format!("{uuid}.png")),
@@ -817,6 +831,10 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
         let _ = polyio::write(&target, &skin_bytes).await;
     }
 
+    // Configure CustomSkinLoader so it properly loads the user's skin and fetches other multiplayer skins
+    write_custom_skin_loader_config(&game_dir.join("CustomSkinLoader")).await;
+    write_custom_skin_loader_config(&game_dir.join("config").join("CustomSkinLoader")).await;
+
     // Also sync to shared .minecraft if distinct from game_dir
     if let Some(shared) = oneclient_common::paths::shared_minecraft_dir().ok().filter(|s| s != game_dir) {
         let shared_targets = [
@@ -831,16 +849,49 @@ async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &
             }
             let _ = polyio::write(&target, &skin_bytes).await;
         }
+        write_custom_skin_loader_config(&shared.join("CustomSkinLoader")).await;
     }
 
-    tracing::info!(uuid, username, "skin direct injection, resource packs, and mod skins ready");
+    tracing::info!(uuid, username, modern_char, legacy_char, "targeted skin direct injection, resource packs, and mod skins ready");
 
     // 5. Patch options.txt to ensure the resource pack is enabled
     patch_resource_packs_option(&options_txt, PACK_NAME, true).await;
 }
 
-/// Directly modifies default Steve, Alex, Ari, etc. player texture entries inside the Minecraft client `.jar`.
-async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>) {
+/// Automatically writes CustomSkinLoader configuration to prioritize local custom skin
+/// and resolve other online/offline multiplayer skins cleanly.
+async fn write_custom_skin_loader_config(csl_dir: &Path) {
+    let config_path = csl_dir.join("CustomSkinLoader.json");
+    let content = r#"{
+  "version": "14.14",
+  "loadlist": [
+    {
+      "name": "LocalSkin",
+      "type": "CustomSkinLoader",
+      "root": "CustomSkinLoader/skins/{USERNAME}.png"
+    },
+    {
+      "name": "Mojang",
+      "type": "Mojang"
+    },
+    {
+      "name": "Ely.by",
+      "type": "ElyBy"
+    },
+    {
+      "name": "SkinRestorer",
+      "type": "CustomSkinAPI",
+      "root": "https://api.skinrestorer.net/v1/profile/{USERNAME}"
+    }
+  ]
+}"#;
+    let _ = polyio::create_dir_all(csl_dir).await;
+    let _ = polyio::write(&config_path, content.as_bytes()).await;
+}
+
+/// Directly modifies only the player's specific character texture inside the Minecraft client `.jar`,
+/// preserving all other 8 default characters in their original pristine state.
+async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>, target_paths: &[String]) {
     use futures_lite::AsyncReadExt;
 
     if !client_jar.exists() {
@@ -904,7 +955,7 @@ async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>) {
 
         let entry_filename = entry.filename().as_str().unwrap_or_default().to_string();
 
-        if DEFAULT_SKIN_PATHS_IN_JAR.contains(&entry_filename.as_str()) {
+        if target_paths.contains(&entry_filename) {
             let builder = async_zip::ZipEntryBuilder::new(
                 entry_filename.clone().into(),
                 async_zip::Compression::Deflate,
@@ -933,11 +984,11 @@ async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>) {
         }
     }
 
-    // Ensure all modern character paths exist in the jar
-    for path in DEFAULT_SKIN_PATHS_IN_JAR {
-        if !written_skins.contains(*path) {
+    // Ensure all target paths exist in the jar
+    for path in target_paths {
+        if !written_skins.contains(path) {
             let builder = async_zip::ZipEntryBuilder::new(
-                (*path).to_string().into(),
+                path.clone().into(),
                 async_zip::Compression::Deflate,
             );
             let _ = writer.write_entry_whole(builder, skin_bytes).await;
@@ -954,12 +1005,12 @@ async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>) {
         tracing::warn!(error = %e, "failed to rename patched client jar");
         let _ = tokio::fs::remove_file(&temp_jar).await;
     } else {
-        tracing::info!(jar = %client_jar.display(), "successfully replaced default skins inside client jar");
+        tracing::info!(jar = %client_jar.display(), "successfully replaced player default skin inside client jar");
     }
 }
 
-/// Creates a zipped `.zip` resource pack file.
-async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8]) {
+/// Creates a targeted zipped `.zip` resource pack file.
+async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8], modern_char: &str, legacy_char: &str) {
     let out_file = match tokio::fs::File::create(zip_path).await {
         Ok(f) => f,
         Err(_) => return,
@@ -970,22 +1021,20 @@ async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8]) {
     let mcmeta_builder = async_zip::ZipEntryBuilder::new("pack.mcmeta".to_string().into(), async_zip::Compression::Stored);
     let _ = writer.write_entry_whole(mcmeta_builder, mcmeta.as_bytes()).await;
 
-    for &name in ALL_DEFAULT_SKIN_FILENAMES {
-        let b1 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/wide/{name}").into(), async_zip::Compression::Deflate);
-        let _ = writer.write_entry_whole(b1, skin_bytes).await;
+    let b1 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/wide/{modern_char}").into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b1, skin_bytes).await;
 
-        let b2 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/slim/{name}").into(), async_zip::Compression::Deflate);
-        let _ = writer.write_entry_whole(b2, skin_bytes).await;
+    let b2 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/slim/{modern_char}").into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b2, skin_bytes).await;
 
-        let b3 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/{name}").into(), async_zip::Compression::Deflate);
-        let _ = writer.write_entry_whole(b3, skin_bytes).await;
-    }
+    let b3 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/{modern_char}").into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b3, skin_bytes).await;
 
-    let b_steve = async_zip::ZipEntryBuilder::new("assets/minecraft/textures/entity/steve.png".to_string().into(), async_zip::Compression::Deflate);
-    let _ = writer.write_entry_whole(b_steve, skin_bytes).await;
+    let b4 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/{legacy_char}").into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b4, skin_bytes).await;
 
-    let b_alex = async_zip::ZipEntryBuilder::new("assets/minecraft/textures/entity/alex.png".to_string().into(), async_zip::Compression::Deflate);
-    let _ = writer.write_entry_whole(b_alex, skin_bytes).await;
+    let b_legacy = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/{legacy_char}").into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b_legacy, skin_bytes).await;
 
     let _ = writer.close().await;
 }

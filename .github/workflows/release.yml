@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release Tag (e.g. v2.2.3)'
         required: false
-        default: 'v2.2.3-c1'
+        default: 'v2.2.3-c2'
         type: string
 
 permissions:
@@ -138,7 +138,7 @@ jobs:
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v2.2.3-c1" >> $GITHUB_OUTPUT
+            echo "tag=v2.2.3-c2" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean up previous release if exists
