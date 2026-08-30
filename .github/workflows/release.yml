@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release Tag (e.g. v2.2.3)'
         required: false
-        default: 'v2.2.3'
+        default: 'v2.2.3-c1'
         type: string
 
 permissions:
@@ -138,7 +138,7 @@ jobs:
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v2.2.3" >> $GITHUB_OUTPUT
+            echo "tag=v2.2.3-c1" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean up previous release if exists
@@ -153,8 +153,12 @@ jobs:
           files: ./artifacts/**/*
           tag_name: ${{ steps.release_tag.outputs.tag }}
           name: "OneLauncher-Cracked ${{ steps.release_tag.outputs.tag }}"
+          body: |
+            ### What's New in ${{ steps.release_tag.outputs.tag }}
+            - **In-Game Custom Skins**: Custom skins now directly replace default Minecraft character textures inside the client jar and sync as resource packs/mod files so your skin always loads offline.
+            - **Built-in Auto-Updater**: Directly checks GitHub Releases for new updates with automatic background download and in-place installer support.
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
           make_latest: true
           fail_on_unmatched_files: false
