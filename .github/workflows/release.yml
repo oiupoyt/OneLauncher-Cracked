@@ -112,8 +112,6 @@ jobs:
             target/${{ matrix.target }}/release/*.AppImage
             target/${{ matrix.target }}/release/*.dmg
             target/${{ matrix.target }}/release/*-setup.exe
-            target/${{ matrix.target }}/release/oneclient_app.exe
-            target/${{ matrix.target }}/release/oneclient_app
             target/${{ matrix.target }}/generate-rpm/*.rpm
             target/generate-rpm/*.rpm
             target/release/*.deb
