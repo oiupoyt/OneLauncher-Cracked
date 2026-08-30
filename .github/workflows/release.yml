@@ -155,7 +155,7 @@ jobs:
           name: "OneLauncher-Cracked ${{ steps.release_tag.outputs.tag }}"
           body: |
             ### What's New in ${{ steps.release_tag.outputs.tag }}
-            - **In-Game Custom Skins**: Custom skins now directly replace default Minecraft character textures inside the client jar and sync as resource packs/mod files so your skin always loads offline.
+            - **Fixed In-Game Multiplayer Skins**: Fixed an issue where custom skins were cloned across all players in multiplayer servers. Custom skins now target only your account's specific character slot while preserving all other players' skins/models, alongside pre-configured CustomSkinLoader support for Ely.by & SkinRestorer.
             - **Built-in Auto-Updater**: Directly checks GitHub Releases for new updates with automatic background download and in-place installer support.
           draft: false
           prerelease: false
