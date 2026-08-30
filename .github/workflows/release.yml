@@ -141,6 +141,12 @@ jobs:
             echo "tag=v2.2.3" >> $GITHUB_OUTPUT
           fi
 
+      - name: Clean up previous release if exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "${{ steps.release_tag.outputs.tag }}" -y --cleanup-tag=false || true
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
