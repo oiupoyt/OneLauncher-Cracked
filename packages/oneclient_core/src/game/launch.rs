@@ -276,9 +276,8 @@ pub async fn launch_cluster(
         java.major,
     )?;
 
-    // Inject custom skin as a resource pack that overrides default character textures
-    // across all Minecraft versions, plus syncs to mod directories (CustomSkinLoader, etc.)
-    inject_skin_resource_pack(&cwd, &account.id.to_string(), &account.username).await;
+    // Replace default Minecraft skin textures inside client jar, write resource packs, and sync mod folders
+    inject_skin(&cwd, &client_jar, &account.id.to_string(), &account.username).await;
 
     let mut mc_args = arguments::minecraft_arguments(
         updated,
@@ -695,16 +694,39 @@ const ALL_DEFAULT_SKIN_FILENAMES: &[&str] = &[
     "zuri.png",
 ];
 
-/// Creates (or updates) a `onelauncher_skin` resource pack in the game directory that
-/// overrides all default player textures across all Minecraft versions (Steve, Alex, Ari, Efe, Kai, Makena, Noor, Sunny, Zuri)
-/// with the player's saved custom skin PNG. Also patches `options.txt` to enable the pack and syncs to mod folders.
-///
-/// If the player has no custom skin, the pack folder and `options.txt` entry are cleaned up.
-async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) {
+const DEFAULT_SKIN_PATHS_IN_JAR: &[&str] = &[
+    "assets/minecraft/textures/entity/player/wide/steve.png",
+    "assets/minecraft/textures/entity/player/wide/alex.png",
+    "assets/minecraft/textures/entity/player/wide/ari.png",
+    "assets/minecraft/textures/entity/player/wide/efe.png",
+    "assets/minecraft/textures/entity/player/wide/kai.png",
+    "assets/minecraft/textures/entity/player/wide/makena.png",
+    "assets/minecraft/textures/entity/player/wide/noor.png",
+    "assets/minecraft/textures/entity/player/wide/sunny.png",
+    "assets/minecraft/textures/entity/player/wide/zuri.png",
+    "assets/minecraft/textures/entity/player/slim/steve.png",
+    "assets/minecraft/textures/entity/player/slim/alex.png",
+    "assets/minecraft/textures/entity/player/slim/ari.png",
+    "assets/minecraft/textures/entity/player/slim/efe.png",
+    "assets/minecraft/textures/entity/player/slim/kai.png",
+    "assets/minecraft/textures/entity/player/slim/makena.png",
+    "assets/minecraft/textures/entity/player/slim/noor.png",
+    "assets/minecraft/textures/entity/player/slim/sunny.png",
+    "assets/minecraft/textures/entity/player/slim/zuri.png",
+    "assets/minecraft/textures/entity/player/steve.png",
+    "assets/minecraft/textures/entity/player/alex.png",
+    "assets/minecraft/textures/entity/steve.png",
+    "assets/minecraft/textures/entity/alex.png",
+];
+
+/// Replaces default Minecraft character textures directly inside the Minecraft client `.jar`,
+/// creates directory and `.zip` resource packs, and syncs custom skins to mod directories.
+async fn inject_skin(game_dir: &Path, client_jar: &Path, uuid: &str, username: &str) {
     const PACK_NAME: &str = "onelauncher_skin";
 
     let resourcepacks_dir = game_dir.join("resourcepacks");
     let pack_dir = resourcepacks_dir.join(PACK_NAME);
+    let pack_zip = resourcepacks_dir.join(format!("{PACK_NAME}.zip"));
     let options_txt = game_dir.join("options.txt");
 
     // --- Resolve skin PNG ---
@@ -728,11 +750,15 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) 
     };
 
     let Some(valid_skin_path) = resolved_skin_path else {
-        // No custom skin — remove the pack dir and strip from options.txt
+        // No custom skin — restore untouched client jar, remove resource pack files, and clean options.txt
+        patch_client_jar_skins(client_jar, None).await;
         if pack_dir.exists() {
             let _ = polyio::remove_dir_all(&pack_dir).await;
-            patch_resource_packs_option(&options_txt, PACK_NAME, false).await;
         }
+        if pack_zip.exists() {
+            let _ = polyio::remove_file(&pack_zip).await;
+        }
+        patch_resource_packs_option(&options_txt, PACK_NAME, false).await;
         return;
     };
 
@@ -744,7 +770,10 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) 
         }
     };
 
-    // 1. Write Resource Pack directory structure
+    // 1. Directly patch the client jar so default textures in-game match the skin
+    patch_client_jar_skins(client_jar, Some(&skin_bytes)).await;
+
+    // 2. Write Resource Pack directory structure
     let textures_wide = pack_dir.join("assets/minecraft/textures/entity/player/wide");
     let textures_slim = pack_dir.join("assets/minecraft/textures/entity/player/slim");
     let textures_player = pack_dir.join("assets/minecraft/textures/entity/player");
@@ -755,22 +784,22 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) 
     let _ = polyio::create_dir_all(&textures_player).await;
     let _ = polyio::create_dir_all(&textures_entity).await;
 
-    // Overwrite all 9 modern characters for both wide and slim, and generic player directory
     for name in ALL_DEFAULT_SKIN_FILENAMES {
         let _ = polyio::write(textures_wide.join(name), &skin_bytes).await;
         let _ = polyio::write(textures_slim.join(name), &skin_bytes).await;
         let _ = polyio::write(textures_player.join(name), &skin_bytes).await;
     }
 
-    // Overwrite legacy entity textures for 1.8 - 1.19
     let _ = polyio::write(textures_entity.join("steve.png"), &skin_bytes).await;
     let _ = polyio::write(textures_entity.join("alex.png"), &skin_bytes).await;
 
-    // pack.mcmeta with universal format compatibility
     let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher Custom Skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
     let _ = polyio::write(pack_dir.join("pack.mcmeta"), mcmeta.as_bytes()).await;
 
-    // 2. Also sync to mod directories (CustomSkinLoader, OfflineSkins, etc.) in game_dir
+    // 3. Write zipped resource pack for loaders that only read .zip files
+    write_skin_zip_resource_pack(&pack_zip, &skin_bytes).await;
+
+    // 4. Also sync to mod directories (CustomSkinLoader, OfflineSkins, etc.) in game_dir
     let mod_targets = [
         game_dir.join("CustomSkinLoader").join("skins").join(format!("{username}.png")),
         game_dir.join("CustomSkinLoader").join("skins").join(format!("{uuid}.png")),
@@ -804,16 +833,168 @@ async fn inject_skin_resource_pack(game_dir: &Path, uuid: &str, username: &str) 
         }
     }
 
-    tracing::info!(uuid, username, "skin resource pack and mod skins ready");
+    tracing::info!(uuid, username, "skin direct injection, resource packs, and mod skins ready");
 
-    // 3. Patch options.txt to ensure the resource pack is enabled
+    // 5. Patch options.txt to ensure the resource pack is enabled
     patch_resource_packs_option(&options_txt, PACK_NAME, true).await;
 }
 
+/// Directly modifies default Steve, Alex, Ari, etc. player texture entries inside the Minecraft client `.jar`.
+async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>) {
+    use futures_lite::AsyncReadExt;
+
+    if !client_jar.exists() {
+        return;
+    }
+
+    let orig_jar = client_jar.with_extension("jar.orig");
+
+    // If no custom skin, restore the unpatched original jar if available
+    let Some(skin_bytes) = skin_bytes else {
+        if orig_jar.exists() {
+            let _ = tokio::fs::copy(&orig_jar, client_jar).await;
+            let _ = tokio::fs::remove_file(&orig_jar).await;
+            tracing::info!(jar = %client_jar.display(), "restored original pristine client jar");
+        }
+        return;
+    };
+
+    // Backup untouched original jar if not already backed up
+    if !orig_jar.exists()
+        && let Err(e) = tokio::fs::copy(client_jar, &orig_jar).await
+    {
+        tracing::warn!(error = %e, "failed to backup client jar before skin injection");
+        return;
+    }
+
+    let jar_data = match polyio::read(&orig_jar).await {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read backup client jar");
+            return;
+        }
+    };
+
+    let reader = match async_zip::base::read::mem::ZipFileReader::new(jar_data).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to parse client jar as zip");
+            return;
+        }
+    };
+
+    let temp_jar = client_jar.with_extension("jar.tmp");
+    let out_file = match tokio::fs::File::create(&temp_jar).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create temporary client jar");
+            return;
+        }
+    };
+
+    let mut writer = async_zip::tokio::write::ZipFileWriter::with_tokio(out_file);
+    let mut written_skins = std::collections::HashSet::new();
+
+    let entries = reader.file().entries();
+    for index in 0..entries.len() {
+        let entry = match entries.get(index) {
+            Some(e) => e,
+            None => continue,
+        };
+
+        let entry_filename = entry.filename().as_str().unwrap_or_default().to_string();
+
+        if DEFAULT_SKIN_PATHS_IN_JAR.contains(&entry_filename.as_str()) {
+            let builder = async_zip::ZipEntryBuilder::new(
+                entry_filename.clone().into(),
+                async_zip::Compression::Deflate,
+            );
+            if writer.write_entry_whole(builder, skin_bytes).await.is_ok() {
+                written_skins.insert(entry_filename);
+            }
+        } else {
+            let mut entry_reader = match reader.reader_without_entry(index).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let mut buf = Vec::new();
+            if entry_reader.read_to_end(&mut buf).await.is_ok() {
+                let compression = if entry.compression() == async_zip::Compression::Stored {
+                    async_zip::Compression::Stored
+                } else {
+                    async_zip::Compression::Deflate
+                };
+                let builder = async_zip::ZipEntryBuilder::new(
+                    entry_filename.into(),
+                    compression,
+                );
+                let _ = writer.write_entry_whole(builder, &buf).await;
+            }
+        }
+    }
+
+    // Ensure all modern character paths exist in the jar
+    for path in DEFAULT_SKIN_PATHS_IN_JAR {
+        if !written_skins.contains(*path) {
+            let builder = async_zip::ZipEntryBuilder::new(
+                (*path).to_string().into(),
+                async_zip::Compression::Deflate,
+            );
+            let _ = writer.write_entry_whole(builder, skin_bytes).await;
+        }
+    }
+
+    if let Err(e) = writer.close().await {
+        tracing::warn!(error = %e, "failed to finalize patched client jar zip");
+        let _ = tokio::fs::remove_file(&temp_jar).await;
+        return;
+    }
+
+    if let Err(e) = tokio::fs::rename(&temp_jar, client_jar).await {
+        tracing::warn!(error = %e, "failed to rename patched client jar");
+        let _ = tokio::fs::remove_file(&temp_jar).await;
+    } else {
+        tracing::info!(jar = %client_jar.display(), "successfully replaced default skins inside client jar");
+    }
+}
+
+/// Creates a zipped `.zip` resource pack file.
+async fn write_skin_zip_resource_pack(zip_path: &Path, skin_bytes: &[u8]) {
+    let out_file = match tokio::fs::File::create(zip_path).await {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let mut writer = async_zip::tokio::write::ZipFileWriter::with_tokio(out_file);
+
+    let mcmeta = r#"{"pack":{"pack_format":34,"description":"OneLauncher Custom Skin","supported_formats":{"min_inclusive":1,"max_inclusive":9999}}}"#;
+    let mcmeta_builder = async_zip::ZipEntryBuilder::new("pack.mcmeta".to_string().into(), async_zip::Compression::Stored);
+    let _ = writer.write_entry_whole(mcmeta_builder, mcmeta.as_bytes()).await;
+
+    for &name in ALL_DEFAULT_SKIN_FILENAMES {
+        let b1 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/wide/{name}").into(), async_zip::Compression::Deflate);
+        let _ = writer.write_entry_whole(b1, skin_bytes).await;
+
+        let b2 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/slim/{name}").into(), async_zip::Compression::Deflate);
+        let _ = writer.write_entry_whole(b2, skin_bytes).await;
+
+        let b3 = async_zip::ZipEntryBuilder::new(format!("assets/minecraft/textures/entity/player/{name}").into(), async_zip::Compression::Deflate);
+        let _ = writer.write_entry_whole(b3, skin_bytes).await;
+    }
+
+    let b_steve = async_zip::ZipEntryBuilder::new("assets/minecraft/textures/entity/steve.png".to_string().into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b_steve, skin_bytes).await;
+
+    let b_alex = async_zip::ZipEntryBuilder::new("assets/minecraft/textures/entity/alex.png".to_string().into(), async_zip::Compression::Deflate);
+    let _ = writer.write_entry_whole(b_alex, skin_bytes).await;
+
+    let _ = writer.close().await;
+}
+
 /// Reads `options.txt`, adds or removes `"file/<name>"` from the `resourcePacks` and `incompatibleResourcePacks` list,
-/// and writes it back. Safe to call even if `options.txt` does not yet exist.
+/// and writes it back. Correctly serializes clean JSON without escaped quotes.
 async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable: bool) {
-    let file_entry = format!("\"file/{pack_name}\"");
+    let file_dir_entry = format!("file/{pack_name}");
+    let file_zip_entry = format!("file/{pack_name}.zip");
 
     let content = polyio::read_to_string(options_txt)
         .await
@@ -829,10 +1010,17 @@ async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable
             found_rp = true;
             let raw = line.trim_start_matches("resourcePacks:").trim();
             let mut packs: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
-            packs.retain(|p| p != "vanilla" && p != &file_entry);
+            packs.retain(|p| {
+                p != "vanilla"
+                    && p != &file_dir_entry
+                    && p != &file_zip_entry
+                    && p != &format!("\"{file_dir_entry}\"")
+                    && p != &format!("\"{file_zip_entry}\"")
+            });
             if enable {
                 packs.insert(0, "vanilla".to_string());
-                packs.push(file_entry.clone());
+                packs.push(file_dir_entry.clone());
+                packs.push(file_zip_entry.clone());
             } else {
                 packs.insert(0, "vanilla".to_string());
             }
@@ -844,9 +1032,15 @@ async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable
             found_incomp = true;
             let raw = line.trim_start_matches("incompatibleResourcePacks:").trim();
             let mut packs: Vec<String> = serde_json::from_str(raw).unwrap_or_default();
-            packs.retain(|p| p != &file_entry);
+            packs.retain(|p| {
+                p != &file_dir_entry
+                    && p != &file_zip_entry
+                    && p != &format!("\"{file_dir_entry}\"")
+                    && p != &format!("\"{file_zip_entry}\"")
+            });
             if enable {
-                packs.push(file_entry.clone());
+                packs.push(file_dir_entry.clone());
+                packs.push(file_zip_entry.clone());
             }
             *line = format!(
                 "incompatibleResourcePacks:{}",
@@ -856,10 +1050,14 @@ async fn patch_resource_packs_option(options_txt: &Path, pack_name: &str, enable
     }
 
     if !found_rp && enable {
-        lines.push(format!("resourcePacks:[\"vanilla\",{file_entry}]"));
+        let entries = vec!["vanilla", &file_dir_entry, &file_zip_entry];
+        let default_rp = serde_json::to_string(&entries).unwrap_or_default();
+        lines.push(format!("resourcePacks:{default_rp}"));
     }
     if !found_incomp && enable {
-        lines.push(format!("incompatibleResourcePacks:[{file_entry}]"));
+        let entries = vec![&file_dir_entry, &file_zip_entry];
+        let default_incomp = serde_json::to_string(&entries).unwrap_or_default();
+        lines.push(format!("incompatibleResourcePacks:{default_incomp}"));
     }
 
     let new_content = lines.join("\n") + "\n";
