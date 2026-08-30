@@ -337,8 +337,7 @@ impl Component for FilterPopover {
             .opacity(progress)
             .offset_y((progress - 1.0) * 6.)
             .corner_radius(CornerRadius::new_all(10.))
-            .background(colors::page_elevated().with_a(230))
-            .blur(12.)
+            .background(colors::page_elevated())
             .border(crate::ui::border_all_color(1., colors::component_border()))
             .shadow(Shadow::from((
                 0.,
@@ -362,11 +361,15 @@ impl Component for FilterPopover {
                 sort.set(Some(mode.key().to_string()));
             })
             .into();
-            panel = panel.child(ChoiceRow {
-                text: mode.label(),
-                selected,
-                on_press,
-            });
+            panel = panel.child(
+                ChoiceRow {
+                    text: mode.label(),
+                    selected,
+                    on_press,
+                    key: DiffKey::None,
+                }
+                .key(mode.key()),
+            );
         }
 
         panel = panel.child(section_label("Show"));
@@ -376,11 +379,15 @@ impl Component for FilterPopover {
                 enabled_filter.set(filter);
             })
             .into();
-            panel = panel.child(ChoiceRow {
-                text: filter.label(),
-                selected,
-                on_press,
-            });
+            panel = panel.child(
+                ChoiceRow {
+                    text: filter.label(),
+                    selected,
+                    on_press,
+                    key: DiffKey::None,
+                }
+                .key(filter.label()),
+            );
         }
 
         panel = panel.child(section_label("Hidden packages"));
@@ -390,11 +397,15 @@ impl Component for FilterPopover {
                 hidden_filter.set(filter);
             })
             .into();
-            panel = panel.child(ChoiceRow {
-                text: filter.label(),
-                selected,
-                on_press,
-            });
+            panel = panel.child(
+                ChoiceRow {
+                    text: filter.label(),
+                    selected,
+                    on_press,
+                    key: DiffKey::None,
+                }
+                .key(filter.label()),
+            );
         }
 
         rect()
@@ -432,6 +443,13 @@ struct ChoiceRow {
     text: &'static str,
     selected: bool,
     on_press: EventHandler<Event<PressEventData>>,
+    key: DiffKey,
+}
+
+impl KeyExt for ChoiceRow {
+    fn write_key(&mut self) -> &mut DiffKey {
+        &mut self.key
+    }
 }
 
 impl Component for ChoiceRow {
