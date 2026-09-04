@@ -140,8 +140,12 @@ freya = {version = "=0.5.0-rc.4", features = ["engine", "winit", "router", "remo
 freya-skia-safe = "=0.99.1" # required for the SKSL player renderer
 image = {version = "=0.25.10", default-features = false, features = ["png", "jpeg"]}
 
+[profile.dev]
+debug = 1
+
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 [profile.release]
 codegen-units = 1
