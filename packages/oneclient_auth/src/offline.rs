@@ -2,8 +2,8 @@ use chrono::{Duration, Utc};
 use md5::{Digest, Md5};
 use uuid::Uuid;
 
-use super::data::{AccountKind, MinecraftAccount};
 use super::error::AuthError;
+use super::data::{AccountKind, MinecraftAccount};
 use crate::error::AuthResult;
 
 pub fn offline_uuid(username: &str) -> Uuid {
@@ -23,7 +23,8 @@ pub fn validate_offline_username(username: &str) -> AuthResult<()> {
     if !(3..=16).contains(&len) {
         return Err(AuthError::InvalidOfflineUsername {
             reason: "username must be 3-16 characters".into(),
-        });
+        }
+        );
     }
 
     if !username
@@ -32,7 +33,8 @@ pub fn validate_offline_username(username: &str) -> AuthResult<()> {
     {
         return Err(AuthError::InvalidOfflineUsername {
             reason: "username may only contain letters, digits, and underscores".into(),
-        });
+        }
+        );
     }
 
     Ok(())

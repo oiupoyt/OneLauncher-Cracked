@@ -91,5 +91,4 @@ serde_json.workspace = true
 sysinfo.workspace = true
 trash.workspace = true
 url.workspace = true
-uuid = { workspace = true, features = ["v3", "serde"] }
-md5 = "0.8.1"
+uuid.workspace = true

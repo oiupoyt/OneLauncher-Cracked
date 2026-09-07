@@ -1,9 +1,7 @@
-use oneclient_common::domain::{ContentType, GameLoader, ProviderId};
-use oneclient_content::bundles::{
-    BundleFile, BundleFileKind, BundleManifest, check_bundle_updates,
-};
-use oneclient_core::LauncherState;
+use oneclient_content::bundles::{BundleFile, BundleFileKind, BundleManifest, check_bundle_updates};
 use oneclient_core::clusters::CreateClusterOptions;
+use oneclient_common::domain::{ContentType, GameLoader, ProviderId};
+use oneclient_core::LauncherState;
 use oneclient_db::dao::{artifact as artifact_dao, cluster_bundle as bundle_dao};
 use oneclient_db::models::OverrideType;
 
@@ -59,14 +57,12 @@ fn manifest(files: Vec<BundleFile>) -> BundleManifest {
 
 async fn cluster_with_tracked_mod(state: &LauncherState) -> i64 {
     let global = state.settings.read().global_game_settings.clone();
-    let cluster = state
-        .clusters
-        .create(
-            &global,
-            CreateClusterOptions::new("Bundle Cluster", MC_VERSION, GameLoader::Fabric),
-        )
-        .await
-        .unwrap();
+    let cluster = state.clusters.create(
+        &global,
+        CreateClusterOptions::new("Bundle Cluster", MC_VERSION, GameLoader::Fabric),
+    )
+    .await
+    .unwrap();
 
     artifact_dao::insert_artifact(
         &state.services.db,
@@ -120,13 +116,9 @@ async fn mod_still_in_manifest_is_not_removed() {
         .unwrap();
     let cluster_id = cluster_with_tracked_mod(&state).await;
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert!(
         check.removals_available.is_empty(),
@@ -144,13 +136,9 @@ async fn mod_dropped_from_manifest_is_removed() {
         .unwrap();
     let cluster_id = cluster_with_tracked_mod(&state).await;
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert_eq!(
         check.removals_available.len(),
@@ -181,13 +169,9 @@ async fn disabled_mod_dropped_from_manifest_is_still_removed() {
     .await
     .unwrap();
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert_eq!(
         check.removals_available.len(),
@@ -217,13 +201,9 @@ async fn user_disabled_mod_is_not_treated_as_a_removal() {
     .await
     .unwrap();
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert!(
         check.removals_available.is_empty(),
@@ -243,13 +223,9 @@ async fn live_bundle_takes_on_new_catalog_files() {
     .unwrap();
     let cluster_id = cluster_with_tracked_mod(&state).await;
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert_eq!(
         check.additions_available.len(),
@@ -289,13 +265,9 @@ async fn emptied_bundle_does_not_take_on_new_catalog_files() {
     .await
     .unwrap();
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert!(
         check.additions_available.is_empty(),
@@ -328,13 +300,9 @@ async fn removed_bundle_content_does_not_take_on_new_catalog_files() {
     .await
     .unwrap();
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert!(
         check.additions_available.is_empty(),
@@ -380,17 +348,91 @@ async fn opting_a_single_file_in_keeps_the_bundle_live() {
     .await
     .unwrap();
 
-    let check = check_bundle_updates(
-        cluster_id,
-        state.bundles.as_ref(),
-        &state.services.content(),
-    )
-    .await
-    .unwrap();
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
 
     assert_eq!(
         check.additions_available.len(),
         1,
         "an explicit opt-in is consent, even with the rest of the bundle disabled"
+    );
+}
+
+async fn seed_delisted_bundle(state: &LauncherState) {
+    oneclient_db::dao::bundle::upsert_bundle(
+        &state.services.db,
+        oneclient_db::models::NewBundle {
+            remote_path: "bundles/delisted.mrpack",
+            mc_version: MC_VERSION,
+            mc_loader: GameLoader::Fabric as i64,
+            file_name: "delisted.mrpack",
+            name: Some(BUNDLE),
+            version_id: Some("1"),
+            category: Some("test"),
+            loader_version: Some("0.16.0"),
+            disk_path: "bundles/delisted.mrpack",
+            hidden: true,
+            etag: None,
+            synced_at: None,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn delisted_bundle_content_is_removed() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    seed_delisted_bundle(&state).await;
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        check.removals_available.len(),
+        1,
+        "content exclusive to a bundle the catalog dropped should be removed"
+    );
+    assert_eq!(check.removals_available[0].package_id, PROJECT_ID);
+}
+
+#[tokio::test]
+async fn delisted_bundle_content_another_bundle_still_ships_is_kept() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    seed_delisted_bundle(&state).await;
+    let mut successor = manifest(vec![managed_file(true)]);
+    successor.name = "Successor Bundle".to_string();
+    oneclient_core::dev::seed_bundle_archive(&state, successor)
+        .await
+        .unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
+
+    assert!(
+        check.removals_available.is_empty(),
+        "a mod another live bundle still ships is not exclusive: {:?}",
+        check.removals_available
+    );
+}
+
+#[tokio::test]
+async fn tracked_bundle_that_never_synced_is_not_removed() {
+    let state = oneclient_core::dev::ephemeral_state().await.unwrap();
+    let cluster_id = cluster_with_tracked_mod(&state).await;
+
+    let check = check_bundle_updates(cluster_id, state.bundles.as_ref(), &state.services.content())
+        .await
+        .unwrap();
+
+    assert!(
+        check.removals_available.is_empty(),
+        "an absent catalog is not a delisting and must not take content down: {:?}",
+        check.removals_available
     );
 }

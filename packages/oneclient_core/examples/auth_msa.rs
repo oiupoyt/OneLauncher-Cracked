@@ -1,6 +1,7 @@
+
 use std::process::Command;
 
-use oneclient_core::{LauncherResult, dev, logger};
+use oneclient_core::{dev, logger, LauncherResult};
 
 #[tokio::main]
 async fn main() -> LauncherResult<()> {
@@ -24,10 +25,7 @@ async fn main() -> LauncherResult<()> {
         "Signed in as {} ({})\n  token expires: {}",
         account.username, account.id, account.expires
     );
-    println!(
-        "Account saved to {}",
-        oneclient_common::paths::auth_file()?.display()
-    );
+    println!("Account saved to {}", oneclient_common::paths::auth_file()?.display());
 
     Ok(())
 }
@@ -44,9 +42,7 @@ fn try_open_browser(url: &str) {
     match result {
         Ok(_) => println!("Opened verification page in your default browser.\n"),
         Err(err) => {
-            println!(
-                "Could not open browser automatically ({err}). Open the URL above manually.\n"
-            );
+            println!("Could not open browser automatically ({err}). Open the URL above manually.\n");
         }
     }
 }

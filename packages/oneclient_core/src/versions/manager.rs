@@ -1,10 +1,11 @@
+
 use tokio::sync::RwLock;
 
-use crate::LauncherResult;
-use crate::state::LauncherServices;
-use crate::versions::manifest::{RemoteMigration, VersionMetadata, VersionsManifest};
 use oneclient_common::paths;
 use oneclient_net::{EtagPolicy, fetch_cached};
+use crate::state::LauncherServices;
+use crate::versions::manifest::{RemoteMigration, VersionMetadata, VersionsManifest};
+use crate::LauncherResult;
 
 pub struct VersionsManager {
     manifest: RwLock<VersionsManifest>,
@@ -71,13 +72,8 @@ impl VersionsManager {
             services.requester.config().meta_url_base
         );
 
-        let Some(fetched) = fetch_cached(
-            &services.requester,
-            &url,
-            &manifest_path,
-            EtagPolicy::CommitNow,
-        )
-        .await?
+        let Some(fetched) =
+            fetch_cached(&services.requester, &url, &manifest_path, EtagPolicy::CommitNow).await?
         else {
             return Ok(None);
         };
@@ -91,3 +87,5 @@ impl Default for VersionsManager {
         Self::new()
     }
 }
+
+

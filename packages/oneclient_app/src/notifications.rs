@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use oneclient_content::packages::ProviderId;
-use oneclient_core::BrowserPackageUpdate;
-use oneclient_db::models::ClusterId;
 use oneclient_events::{
     Answer, Choice, Event, GroupedProgressEvent, Level, Notification, ProgressEvent, TaskCategory,
 };
+use oneclient_content::packages::ProviderId;
+use oneclient_core::BrowserPackageUpdate;
+use oneclient_db::models::{ClusterId, OptionalModStatus};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -36,12 +36,16 @@ pub struct PackageUpdateGroup {
     pub packages: Vec<BrowserPackageUpdate>,
 }
 
+pub type OptionalModRef = (String, String);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClusterUpdateItem {
     pub provider: ProviderId,
     pub project_id: Option<String>,
     /// Used when the meta cache has no entry (file name / package id)
     pub fallback: String,
+    pub offer: Option<OptionalModRef>,
+    pub status: Option<OptionalModStatus>,
 }
 
 impl ClusterUpdateItem {
@@ -50,7 +54,35 @@ impl ClusterUpdateItem {
             provider: ProviderId::Local,
             project_id: None,
             fallback: name.into(),
+            offer: None,
+            status: None,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptionalModsGroup {
+    pub cluster_id: ClusterId,
+    pub cluster_name: String,
+    pub mods: Vec<ClusterUpdateItem>,
+}
+
+impl OptionalModsGroup {
+    pub fn from_summary(summary: &ClusterUpdateSummary) -> Option<Self> {
+        if summary.optional.is_empty() {
+            return None;
+        }
+        Some(Self {
+            cluster_id: summary.cluster_id,
+            cluster_name: summary.cluster_name.clone(),
+            mods: summary.optional.clone(),
+        })
+    }
+
+    pub fn offers(&self) -> impl Iterator<Item = (ClusterId, OptionalModRef)> + '_ {
+        self.mods
+            .iter()
+            .filter_map(move |item| item.offer.clone().map(|reference| (self.cluster_id, reference)))
     }
 }
 
@@ -60,6 +92,7 @@ pub struct ClusterUpdateSummary {
     pub cluster_name: String,
     pub updated: Vec<ClusterUpdateItem>,
     pub added: Vec<ClusterUpdateItem>,
+    pub optional: Vec<ClusterUpdateItem>,
     pub removed: Vec<ClusterUpdateItem>,
 }
 
@@ -167,6 +200,7 @@ pub struct NotificationSnapshot {
     pub center_open: bool,
     pub pending_prompt: Option<PendingPromptView>,
     pub cluster_update: Option<Vec<ClusterUpdateSummary>>,
+    pub optional_mods: Option<Vec<OptionalModsGroup>>,
     pub package_updates: Option<Vec<PackageUpdateGroup>>,
     pub active_toast_entry_ids: Vec<u64>,
 }
@@ -186,11 +220,13 @@ pub struct NotificationState {
     grouped_tasks: HashMap<Uuid, GroupedTasks>,
     pending_timers: Vec<ToastDismissTimer>,
     cluster_update: Option<Vec<ClusterUpdateSummary>>,
+    optional_mods: Option<Vec<OptionalModsGroup>>,
     package_updates: Option<Vec<PackageUpdateGroup>>,
     /// Resumes the launch that opened the update modal
     /// Held here not by the launch task
     /// because every way the modal can end goes through this state
     package_updates_done: Option<oneshot::Sender<()>>,
+    optional_mods_done: Option<oneshot::Sender<()>>,
 }
 
 const CATEGORY_ORDER: [TaskCategory; 7] = [
@@ -238,11 +274,8 @@ impl GroupedTasks {
                 let done_count = self.done_count.get(&cat).copied().unwrap_or(0);
                 let reserved_units = self.reserved_units.get(&cat).copied().unwrap_or(0);
 
-                let live: Vec<&ChildRec> = self
-                    .children
-                    .values()
-                    .filter(|c| c.category == cat)
-                    .collect();
+                let live: Vec<&ChildRec> =
+                    self.children.values().filter(|c| c.category == cat).collect();
                 let live_current: u64 = live.iter().map(|c| c.current.min(c.total)).sum();
                 let live_total: u64 = live.iter().map(|c| c.total).sum();
 
@@ -297,6 +330,7 @@ impl NotificationState {
             center_open,
             pending_prompt,
             cluster_update: self.cluster_update.clone(),
+            optional_mods: self.optional_mods.clone(),
             package_updates: self.package_updates.clone(),
             active_toast_entry_ids: self.active_toasts.iter().map(|t| t.entry_id).collect(),
         }
@@ -318,8 +352,39 @@ impl NotificationState {
         self.cluster_update = None;
     }
 
-    /// `done` is the launch's continuation it fires immediately when there is nothing
-    /// to show so a launch never waits on a modal that was never drawn
+    pub fn open_optional_mods(
+        &mut self,
+        groups: Vec<OptionalModsGroup>,
+        done: Option<oneshot::Sender<()>>,
+    ) {
+        let groups: Vec<OptionalModsGroup> = groups
+            .into_iter()
+            .filter(|group| !group.mods.is_empty())
+            .collect();
+
+        if groups.is_empty() {
+            if let Some(done) = done {
+                let _ = done.send(());
+            }
+            return;
+        }
+
+        self.finish_optional_mods();
+        self.optional_mods = Some(groups);
+        self.optional_mods_done = done;
+    }
+
+    pub fn hide_optional_mods(&mut self) {
+        self.optional_mods = None;
+    }
+
+    pub fn finish_optional_mods(&mut self) {
+        self.optional_mods = None;
+        if let Some(done) = self.optional_mods_done.take() {
+            let _ = done.send(());
+        }
+    }
+
     pub fn open_package_updates(
         &mut self,
         groups: Vec<PackageUpdateGroup>,
@@ -668,7 +733,8 @@ impl NotificationState {
             self.update_inbox_entry(inbox, entry_id, title, body, None, false);
             self.ensure_progress_toast(entry_id);
         } else {
-            let entry_id = self.push_inbox(inbox, title, body, Level::Info, None, false);
+            let entry_id =
+                self.push_inbox(inbox, title, body, Level::Info, None, false);
             self.push_ephemeral_toast(entry_id, MESSAGE_TOAST_TTL);
         }
     }
@@ -943,10 +1009,7 @@ mod package_update_tests {
         );
 
         state.resolve_package_update(1, "b");
-        assert!(
-            wait.try_recv().is_ok(),
-            "the last answer releases the launch"
-        );
+        assert!(wait.try_recv().is_ok(), "the last answer releases the launch");
         assert!(state.package_updates.is_none());
     }
 
@@ -971,10 +1034,7 @@ mod package_update_tests {
 
         state.open_package_updates(vec![group(&[])], Some(done));
 
-        assert!(
-            wait.try_recv().is_ok(),
-            "a modal that never opens cannot be answered"
-        );
+        assert!(wait.try_recv().is_ok(), "a modal that never opens cannot be answered");
         assert!(state.package_updates.is_none());
     }
 
@@ -987,10 +1047,7 @@ mod package_update_tests {
         state.open_package_updates(vec![group(&["a"])], Some(first));
         state.open_package_updates(vec![group(&["b"])], Some(second));
 
-        assert!(
-            first_wait.try_recv().is_ok(),
-            "the replaced launch is let go"
-        );
+        assert!(first_wait.try_recv().is_ok(), "the replaced launch is let go");
         assert!(second_wait.try_recv().is_err(), "the new one still waits");
     }
 

@@ -88,7 +88,8 @@ async fn liberica_publishes_sha1_and_the_rest_publish_sha256() {
         };
 
         assert_eq!(
-            checksum.algorithm, expected,
+            checksum.algorithm,
+            expected,
             "{vendor} changed the algorithm it publishes"
         );
     }

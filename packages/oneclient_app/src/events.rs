@@ -171,10 +171,7 @@ impl EventPump {
                 guard.game.stages.insert(cluster_id, stage);
                 if stage == LaunchStage::Checking {
                     guard.game.error = None;
-                    guard
-                        .game
-                        .logs
-                        .insert(cluster_id, std::sync::Arc::new(Vec::new()));
+                    guard.game.logs.insert(cluster_id, std::sync::Arc::new(Vec::new()));
                 }
             }
             for (cluster_id, line) in logs {
@@ -249,9 +246,7 @@ fn reconcile(
         .collect();
 
     for id in &want {
-        armed
-            .entry(*id)
-            .or_insert_with(|| ToastTimer::armed(paused));
+        armed.entry(*id).or_insert_with(|| ToastTimer::armed(paused));
     }
     armed.retain(|id, _| want.contains(id));
 }
@@ -313,7 +308,7 @@ pub async fn start_launcher(
     oneclient_polyplus::start(std::sync::Arc::clone(&state.auth));
     oneclient_core::run_startup_tasks(&state);
 
-    let data_dir = oneclient_common::paths::launcher_dir()
+    let data_dir = oneclient_common::paths::data_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
@@ -330,6 +325,7 @@ pub async fn start_launcher(
             error: None,
             snapshots: 0,
             data_dir,
+            needs_location: false,
         };
     }
     {
@@ -344,11 +340,14 @@ pub async fn start_launcher(
     Ok(())
 }
 
-pub fn report_startup_failure(station: &RadioStation<AppState, AppChannel>, err: &anyhow::Error) {
+pub fn report_startup_failure(
+    station: &RadioStation<AppState, AppChannel>,
+    err: &anyhow::Error,
+) {
     let message = err.to_string();
     tracing::error!("launcher init failed: {err:#}");
 
-    let data_dir = oneclient_common::paths::launcher_dir()
+    let data_dir = oneclient_common::paths::data_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
@@ -362,9 +361,7 @@ pub fn report_startup_failure(station: &RadioStation<AppState, AppChannel>, err:
 
     let mut guard = station.write_channel(AppChannel::Notifications);
     let AppState {
-        notifications,
-        inbox,
-        ..
+        notifications, inbox, ..
     } = &mut **guard;
     notifications.dispatch(
         inbox,

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use freya::animation::{AnimNum, Ease, Function, OnCreation, use_animation};
 use freya::prelude::*;
 use freya::router::use_route;
-use oneclient_content::packages::ContentType;
 use oneclient_core::clusters::Cluster;
+use oneclient_content::packages::ContentType;
 use oneclient_db::models::ClusterId;
 
 use crate::Route;
@@ -330,9 +330,7 @@ fn prompt_body(
 
     let import_list = resolved.clone();
     let import = move |_| {
-        for (path, content_type) in &import_list {
-            dispatch.import_local_file(cluster_id, *content_type, path.clone());
-        }
+        dispatch.import_local_files(cluster_id, import_list.clone());
         pending.set(Vec::new());
     };
 

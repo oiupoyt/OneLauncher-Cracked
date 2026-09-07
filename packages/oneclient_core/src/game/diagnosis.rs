@@ -19,11 +19,11 @@ impl CrashDiagnosis {
     pub fn body(&self) -> String {
         match self {
             Self::CorruptArchive { file: Some(file) } => format!(
-                "The game could not read {file} — the file is damaged. \
+                "The game could not read {file} - the file is damaged. \
                  Verifying will re-download anything that does not match."
             ),
             Self::CorruptArchive { file: None } => "The game could not read one of its \
-                 library or mod files — it is damaged. Verifying will re-download \
+                 library or mod files - it is damaged. Verifying will re-download \
                  anything that does not match."
                 .to_string(),
         }
@@ -50,7 +50,9 @@ pub fn diagnose(line: &str) -> Option<CrashDiagnosis> {
         return None;
     }
 
-    Some(CrashDiagnosis::CorruptArchive { file: jar_in(line) })
+    Some(CrashDiagnosis::CorruptArchive {
+        file: jar_in(line),
+    })
 }
 
 /// Opportunistic some JVMs omit the path entirely and a missing name still
@@ -95,10 +97,7 @@ impl CrashWatch {
             && let Ok(mut found) = self.found.lock()
             && found.is_none()
         {
-            tracing::warn!(
-                ?diagnosis,
-                "recognised a repairable crash cause in the game log"
-            );
+            tracing::warn!(?diagnosis, "recognised a repairable crash cause in the game log");
             *found = Some(diagnosis);
         }
     }
@@ -142,8 +141,7 @@ mod tests {
 
     #[test]
     fn a_windows_path_is_reduced_to_its_file_name() {
-        let line =
-            r"Error: Invalid or corrupt jarfile C:\Users\someone\metadata\libraries\asm-9.7.jar";
+        let line = r"Error: Invalid or corrupt jarfile C:\Users\someone\metadata\libraries\asm-9.7.jar";
 
         assert_eq!(
             diagnose(line),
@@ -196,9 +194,6 @@ mod tests {
         watch.observe("java.util.zip.ZipException: error in opening zip file");
 
         assert!(watch.take().is_some());
-        assert!(
-            watch.take().is_none(),
-            "a diagnosis must not be reported twice"
-        );
+        assert!(watch.take().is_none(), "a diagnosis must not be reported twice");
     }
 }

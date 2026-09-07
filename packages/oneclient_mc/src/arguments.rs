@@ -5,11 +5,11 @@ use interfrost::api::minecraft::{Argument, ArgumentValue, Library, VersionType};
 use interfrost::api::modded::SidedDataEntry;
 use interfrost::utils::get_path_from_artifact;
 
-use crate::error::McError;
-use crate::error::McResult;
-use crate::rules::validate_rules;
-use oneclient_common::Resolution;
 use oneclient_common::constants::{self, DUMMY_REPLACE_NEWLINE};
+use crate::rules::validate_rules;
+use crate::error::McError;
+use oneclient_common::Resolution;
+use crate::error::McResult;
 
 #[allow(clippy::too_many_arguments)]
 pub fn java_arguments(
@@ -330,10 +330,7 @@ pub fn parse_minecraft_argument(
         .replace("${auth_xuid}", "0")
         .replace("${auth_uuid}", &uuid.simple().to_string())
         .replace("${uuid}", &uuid.simple().to_string())
-        .replace(
-            "${clientid}",
-            oneclient_common::constants::MICROSOFT_CLIENT_ID,
-        )
+        .replace("${clientid}", oneclient_common::constants::MICROSOFT_CLIENT_ID)
         .replace("${user_properties}", "{}")
         .replace("${user_type}", "msa")
         .replace("${version_name}", version)
@@ -344,15 +341,11 @@ pub fn parse_minecraft_argument(
         )
         .replace(
             "${assets_root}",
-            &polyio::canonicalize(assets_directory)?
-                .display()
-                .to_string(),
+            &polyio::canonicalize(assets_directory)?.display().to_string(),
         )
         .replace(
             "${game_assets}",
-            &polyio::canonicalize(assets_directory)?
-                .display()
-                .to_string(),
+            &polyio::canonicalize(assets_directory)?.display().to_string(),
         )
         .replace("${version_type}", version_type.as_str())
         .replace("${resolution_width}", &resolution.width.to_string())
@@ -422,7 +415,11 @@ pub fn classpaths(
         .map(|(_, name)| get_library(libraries_path, name, false))
         .collect::<Result<HashSet<_>, _>>()?;
 
-    classpaths.insert(polyio::canonicalize(client_path)?.display().to_string());
+    classpaths.insert(
+        polyio::canonicalize(client_path)?
+            .display()
+            .to_string(),
+    );
 
     tracing::debug!(entries = classpaths.len(), "classpath resolved");
 
@@ -460,11 +457,15 @@ pub fn get_classpath_library<T: AsRef<str>>(
     Ok(classpaths.join(constants::CLASSPATH_SEPARATOR))
 }
 
-pub fn get_library(libraries_path: &Path, library: &str, error_exist: bool) -> McResult<String> {
+pub fn get_library(
+    libraries_path: &Path,
+    library: &str,
+    error_exist: bool,
+) -> McResult<String> {
     let mut path = libraries_path.to_path_buf();
-    path.push(
-        get_path_from_artifact(library).map_err(|_| McError::LibraryPath(library.to_string()))?,
-    );
+    path.push(get_path_from_artifact(library).map_err(|_| {
+        McError::LibraryPath(library.to_string())
+    })?);
 
     if !path.exists() && error_exist {
         return Ok(path.display().to_string());
@@ -749,7 +750,11 @@ mod tests {
     fn a_modern_runtime_gets_the_full_set() {
         assert_eq!(
             flags(25, "aarch64", 16384),
-            vec!["-Xms512M", "-XX:+UseZGC", "-XX:+UseCompactObjectHeaders"]
+            vec![
+                "-Xms512M",
+                "-XX:+UseZGC",
+                "-XX:+UseCompactObjectHeaders"
+            ]
         );
     }
 
@@ -768,7 +773,11 @@ mod tests {
     fn a_tiny_profile_never_starts_above_its_ceiling() {
         assert_eq!(
             flags(21, "amd64", 256),
-            vec!["-Xms256M", "-XX:+UseG1GC", "-XX:+ParallelRefProcEnabled",],
+            vec![
+                "-Xms256M",
+                "-XX:+UseG1GC",
+                "-XX:+ParallelRefProcEnabled",
+            ],
             "a start size above the maximum is refused by the JVM outright"
         );
     }
@@ -778,3 +787,4 @@ mod tests {
         assert_eq!(flags(7, "amd64", 4096), vec!["-Xms512M"]);
     }
 }
+

@@ -65,8 +65,11 @@ const SEARCH_INDEX: &[SearchItem] = &[
         id: "launcher.folder",
         icon: IconType::Folder,
         title: "Launcher Folder",
-        description: "Open the launcher data directory.",
-        keywords: &["data dir", "directory", "folder", "open"],
+        description: "Open the launcher data directory, or move it to another drive.",
+        keywords: &[
+            "data dir", "directory", "folder", "open", "move", "change", "relocate", "location",
+            "drive", "disk",
+        ],
         route: Route::SettingsLauncher {},
     },
     SearchItem {
@@ -794,7 +797,7 @@ impl Component for SidebarItem {
             .on_pointer_enter(move |_| *hovering.write() = true)
             .on_pointer_leave(move |_| *hovering.write() = false)
             .map(route, |el, route| {
-                el.on_all_press(move |_| {
+                el.on_press(move |_| {
                     let _ = RouterContext::get().replace(route.clone());
                 })
             });

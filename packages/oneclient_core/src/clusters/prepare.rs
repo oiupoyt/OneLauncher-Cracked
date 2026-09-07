@@ -5,18 +5,18 @@ use interfrost::api::minecraft::{DownloadType, VersionInfo};
 use interfrost::api::modded::SidedDataEntry;
 use tokio::process::Command;
 
-use crate::game::{
-    self, download_minecraft, download_version_info, get_loader_version, resolve_minecraft_version,
-};
-use crate::state::{LauncherServices, LauncherState};
-use crate::{GameError, LauncherResult};
 use oneclient_cluster::Cluster;
 use oneclient_cluster::ClusterError;
 use oneclient_cluster::ClusterStage;
-use oneclient_common::paths;
-use oneclient_events::GroupedProgressSession;
+use crate::game::{
+    self, download_minecraft, download_version_info, get_loader_version, resolve_minecraft_version,
+};
 use oneclient_java::JavaRuntime;
 use oneclient_mc::MetadataStore;
+use oneclient_events::GroupedProgressSession;
+use oneclient_common::paths;
+use crate::state::{LauncherServices, LauncherState};
+use crate::{GameError, LauncherResult};
 
 #[tracing::instrument(skip(state, shared_progress))]
 pub async fn prepare_cluster_locked(
@@ -61,10 +61,7 @@ pub async fn prepare_cluster(
     );
 
     if !continuing {
-        state
-            .clusters
-            .set_stage(cluster_id, ClusterStage::Downloading)
-            .await?;
+        state.clusters.set_stage(cluster_id, ClusterStage::Downloading).await?;
     }
 
     let owned = shared_progress.is_none().then(|| {
@@ -102,18 +99,12 @@ pub async fn prepare_cluster(
             tracing::error!(cluster_id, error = %err, "cluster preparation failed");
         }
         if !continuing {
-            let _ = state
-                .clusters
-                .set_stage(cluster_id, ClusterStage::NotReady)
-                .await;
+            let _ = state.clusters.set_stage(cluster_id, ClusterStage::NotReady).await;
         }
         return Err(err);
     }
 
-    let cluster = state
-        .clusters
-        .set_stage(cluster_id, ClusterStage::Ready)
-        .await?;
+    let cluster = state.clusters.set_stage(cluster_id, ClusterStage::Ready).await?;
     tracing::debug!(cluster_id, "cluster stage set to Ready");
     Ok(cluster)
 }
@@ -183,32 +174,23 @@ pub async fn estimate_cluster_download(
             cluster.mc_loader_version.as_deref(),
         )
         .await?;
-        download_version_info(
-            &state.services.mc(),
-            None,
-            &version,
-            loader_version.as_ref(),
-            false,
-        )
-        .await?
+        download_version_info(&state.services.mc(), None, &version, loader_version.as_ref(), false).await?
     };
 
     let mut total = game_download_bytes(&state.services, &info).await;
 
     if let Some(java) = &info.java_version {
-        let installed = state.java.list_runtimes().await.unwrap_or_default();
+        let installed = state.java.list_runtimes()
+            .await
+            .unwrap_or_default();
         if !installed.iter().any(|rt| rt.major == java.major_version) {
             total += JRE_ESTIMATE_BYTES;
         }
     }
 
-    total += oneclient_content::bundles::enabled_bundle_bytes(
-        cluster_id,
-        bundles,
-        &state.services.content(),
-    )
-    .await
-    .unwrap_or(0);
+    total += oneclient_content::bundles::enabled_bundle_bytes(cluster_id, bundles, &state.services.content())
+        .await
+        .unwrap_or(0);
 
     Ok(total)
 }
@@ -257,21 +239,14 @@ async fn install_cluster(
         .map(|v| v.major_version)
         .ok_or(ClusterError::MissingJavaVersion)?;
 
-    let java = if let Some(runtime) = state
-        .java
-        .runtime_for_profile(profile.java_path.as_deref())
-        .await?
+    let java = if let Some(runtime) =
+        state.java.runtime_for_profile(profile.java_path.as_deref()).await?
     {
         runtime
     } else {
         state
             .java
-            .prepare(
-                java_major,
-                search_for_java,
-                auto_install_java,
-                Some(progress),
-            )
+            .prepare(java_major, search_for_java, auto_install_java, Some(progress))
             .await?
     };
 
@@ -358,7 +333,8 @@ async fn run_forge_processors(
             .await?
             .ok_or_else(|| GameError::ProcessorMainClass(processor.jar.clone()))?;
 
-        let output = Command::new(&java.absolute_path)
+        let mut command = Command::new(&java.absolute_path);
+        command
             .arg("-cp")
             .arg(game::get_classpath_library(&libraries, &cp)?)
             .arg(&main)
@@ -366,9 +342,10 @@ async fn run_forge_processors(
                 &libraries,
                 &processor.args,
                 data,
-            )?)
-            .output()
-            .await?;
+            )?);
+        oneclient_common::process::no_window(command.as_std_mut());
+
+        let output = command.output().await?;
 
         if !output.status.success() {
             return Err(GameError::ProcessorFailed(

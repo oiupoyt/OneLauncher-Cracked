@@ -1,16 +1,20 @@
 use std::collections::HashSet;
 use std::fs::FileType;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use oneclient_db::dao::artifact as artifact_dao;
 
 use crate::LauncherResult;
 use crate::clusters::Cluster;
-use crate::state::LauncherServices;
 use oneclient_common::domain::ContentType;
+use oneclient_content::packages::store::manifest::{
+    self, ManifestEntry, MaterializedManifest,
+};
+use oneclient_content::packages::store::{
+    artifact_absolute_path, link_or_copy, remove_entry, sweep_staging_files,
+};
 use oneclient_content::packages::PackageStore;
-use oneclient_content::packages::store::manifest::{self, ManifestEntry, MaterializedManifest};
-use oneclient_content::packages::store::{artifact_absolute_path, link_or_copy, remove_entry};
+use crate::state::LauncherServices;
 
 const REDIRECTED_DIRS: [&str; 2] = ["logs", "crash-reports"];
 
@@ -47,24 +51,37 @@ pub async fn materialize_content(
     let dedicated = cluster.uses_dedicated_dir();
     polyio::create_dir_all(game_dir).await.ok();
 
-    // In the shared directory this often belongs to another cluster so every
-    // use of it checks the id
-    let previous = manifest::load(game_dir).await;
+    crate::game::heal::clear_zeroed_files(game_dir).await;
 
     import_manual_content(services, cluster, game_dir).await;
 
     // Before the folder is built not after handing the game several enabled
     // versions of one mod is a classloader conflict
-    if let Err(err) =
-        oneclient_content::bundles::reconcile_duplicate_activity(cluster.id, &services.content())
-            .await
+    if let Err(err) = oneclient_content::bundles::reconcile_duplicate_activity(
+        cluster.id,
+        &services.content(),
+    )
+    .await
     {
         // Not worth blocking a launch the duplicates were already there
         tracing::warn!(cluster_id = cluster.id, %err, "failed to resolve duplicate package versions");
     }
 
+    // Held from the database snapshot through the save so a package removed
+    // mid-launch is not resurrected by our own write; the two calls above take
+    // it themselves so it cannot be taken any earlier
+    let _manifest = manifest::lock().await;
+
+    // In the shared directory this often belongs to another cluster so every
+    // use of it checks the id
+    let previous = manifest::load(game_dir).await;
+
     let desired = desired_content(services, cluster).await?;
     let desired_paths: HashSet<String> = desired.iter().map(Desired::relative_path).collect();
+
+    for content_type in SWAP_TYPES {
+        sweep_staging_files(&game_dir.join(content_type.folder_name())).await;
+    }
 
     // While the game is still closed this is what lands a package removed
     // mid-session and clears another cluster's content from the shared dir
@@ -107,8 +124,10 @@ pub async fn dematerialize_content(
 ) -> LauncherResult<()> {
     // Runs first so anything dropped in during the session is a tracked artifact
     // by now and gets dropped rather than stashed as a loose file
+    // It loads the manifest itself so the lock comes after it
     import_manual_content(services, cluster, game_dir).await;
 
+    let _manifest = manifest::lock().await;
     let current = manifest::load(game_dir).await;
     let linked = PackageStore::list_linked_artifacts(cluster.id, &services.content())
         .await
@@ -121,6 +140,7 @@ pub async fn dematerialize_content(
 
         let ours = ours_in_folder(content_type, &linked, current.as_ref());
         stash_content_files(&dir, &stash, &ours).await;
+        sweep_staging_files(&dir).await;
         ensure_note(&dir, content_type).await;
     }
 
@@ -257,7 +277,11 @@ pub async fn import_manual_content(
         }
     };
 
-    let manifest = manifest::load(game_dir).await;
+    // Not held across the import loop below, which is long and does not need it
+    let manifest = {
+        let _guard = manifest::lock().await;
+        manifest::load(game_dir).await
+    };
 
     for content_type in SWAP_TYPES {
         let dir = game_dir.join(content_type.folder_name());
@@ -307,14 +331,7 @@ pub async fn import_manual_content(
                 continue;
             }
 
-            match PackageStore::import_local_file(
-                &path,
-                content_type,
-                cluster.id,
-                &services.content(),
-            )
-            .await
-            {
+            match PackageStore::import_local_file(&path, content_type, cluster.id, &services.content()).await {
                 Ok(_) => {
                     tracing::debug!(file = name, "registered manually-added content")
                 }
@@ -355,14 +372,35 @@ const ALLOWED_SYMLINKS_NAME: &str = "allowed_symlinks.txt";
 
 #[tracing::instrument(level = "debug")]
 pub async fn write_allowed_symlinks(game_dir: &Path) -> LauncherResult<()> {
-    let root = oneclient_common::paths::launcher_dir()?;
-    let base = polyio::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = oneclient_common::paths::data_dir()?;
+
+    // Distributions that keep the home directory behind a symlink resolve to a
+    // different prefix than the one the launcher hands the game (Fedora Atomic
+    // and its derivatives put /home behind /var/home), and a prefix the game
+    // does not recognise makes it refuse every linked pack, so allow both
+    let mut roots = vec![root.to_path_buf()];
+    if let Ok(canonical) = polyio::canonicalize(root)
+        && canonical != root
+    {
+        roots.push(canonical);
+    }
+
+    polyio::write(
+        game_dir.join(ALLOWED_SYMLINKS_NAME),
+        allowed_symlinks_body(&roots),
+    )
+    .await?;
+    Ok(())
+}
+
+fn allowed_symlinks_body(roots: &[PathBuf]) -> String {
     let sep = std::path::MAIN_SEPARATOR;
 
-    let body = format!("[prefix]{}{}", base.to_string_lossy(), sep);
-
-    polyio::write(game_dir.join(ALLOWED_SYMLINKS_NAME), body).await?;
-    Ok(())
+    roots
+        .iter()
+        .map(|root| format!("[prefix]{}{}", root.to_string_lossy(), sep))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 const EMPTY_NOTE_NAME: &str = "WHY_NOTHING_HERE.txt";
@@ -635,6 +673,27 @@ async fn sync_fabric_dep_overrides(cluster: &Cluster, game_dir: &Path) -> Launch
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_symlinked_home_gets_both_prefixes() {
+        let body = allowed_symlinks_body(&[
+            PathBuf::from("/home/alex/.local/share/OneClient"),
+            PathBuf::from("/var/home/alex/.local/share/OneClient"),
+        ]);
+
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("[prefix]/home/alex/"));
+        assert!(lines[1].starts_with("[prefix]/var/home/alex/"));
+        assert!(lines.iter().all(|line| line.ends_with(std::path::MAIN_SEPARATOR)));
+    }
+
+    #[test]
+    fn an_ordinary_home_gets_one_prefix() {
+        let body = allowed_symlinks_body(&[PathBuf::from("/home/alex/.local/share/OneClient")]);
+
+        assert_eq!(body.lines().count(), 1);
+    }
+
 
     use super::*;
 
@@ -677,17 +736,13 @@ mod tests {
         assert!(!shared.join("bsl.zip").exists(), "managed pack left behind");
         assert!(!shared.join("bsl.zip.txt").exists(), "sidecar left behind");
         assert_eq!(
-            polyio::read_to_string(stash.join("bsl.zip.txt"))
-                .await
-                .unwrap(),
+            polyio::read_to_string(stash.join("bsl.zip.txt")).await.unwrap(),
             "BLOOM=off"
         );
 
         restore_stashed(&stash, &shared, ContentType::Shader, &ours).await;
         assert_eq!(
-            polyio::read_to_string(shared.join("bsl.zip.txt"))
-                .await
-                .unwrap(),
+            polyio::read_to_string(shared.join("bsl.zip.txt")).await.unwrap(),
             "BLOOM=off"
         );
 
@@ -695,9 +750,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            polyio::read_to_string(shared.join("bsl.zip.txt"))
-                .await
-                .unwrap(),
+            polyio::read_to_string(shared.join("bsl.zip.txt")).await.unwrap(),
             "BLOOM=on"
         );
 
@@ -709,15 +762,10 @@ mod tests {
         let root = polyio::testing::ScratchDir::new("unpacked");
         let shared = root.join("shared").join("shaderpacks");
         let stash = root.join("cluster").join("shaderpacks");
-        polyio::create_dir_all(shared.join("Loose/shaders"))
+        polyio::create_dir_all(shared.join("Loose/shaders")).await.unwrap();
+        polyio::write(shared.join("Loose/shaders/final.fsh"), b"void main".as_slice())
             .await
             .unwrap();
-        polyio::write(
-            shared.join("Loose/shaders/final.fsh"),
-            b"void main".as_slice(),
-        )
-        .await
-        .unwrap();
 
         stash_content_files(&shared, &stash, &HashSet::new()).await;
         assert!(!shared.join("Loose").exists());
@@ -788,12 +836,7 @@ mod tests {
         let jar = game_dir.join("mods").join("theirs.jar");
         polyio::write(&jar, b"jar".as_slice()).await.unwrap();
 
-        prune_previous(
-            game_dir,
-            Some(&manifest_of(1, &["mods/theirs.jar"])),
-            &HashSet::new(),
-        )
-        .await;
+        prune_previous(game_dir, Some(&manifest_of(1, &["mods/theirs.jar"])), &HashSet::new()).await;
 
         assert!(polyio::symlink_metadata(&jar).await.is_err());
 
@@ -811,17 +854,9 @@ mod tests {
         let mine = game_dir.join("mods").join("handmade.jar");
         polyio::write(&mine, b"jar".as_slice()).await.unwrap();
 
-        prune_previous(
-            game_dir,
-            Some(&manifest_of(1, &["mods/ours.jar"])),
-            &HashSet::new(),
-        )
-        .await;
+        prune_previous(game_dir, Some(&manifest_of(1, &["mods/ours.jar"])), &HashSet::new()).await;
 
-        assert!(
-            mine.exists(),
-            "a file we never materialized is not ours to delete"
-        );
+        assert!(mine.exists(), "a file we never materialized is not ours to delete");
 
         std::fs::remove_dir_all(root.path()).ok();
     }
@@ -855,10 +890,7 @@ mod tests {
             stash.join("removed.jar").exists(),
             "and it must not be silently deleted either"
         );
-        assert!(
-            shared.join("options.txt").exists(),
-            "sidecars still restore"
-        );
+        assert!(shared.join("options.txt").exists(), "sidecars still restore");
 
         std::fs::remove_dir_all(root.path()).ok();
     }
@@ -880,9 +912,7 @@ mod tests {
         polyio::write(stash.join("leftover.jar"), b"jar".as_slice())
             .await
             .unwrap();
-        polyio::create_dir_all(stash.join("unpacked"))
-            .await
-            .unwrap();
+        polyio::create_dir_all(stash.join("unpacked")).await.unwrap();
         polyio::write(stash.join("unpacked").join("inner.txt"), b"x".as_slice())
             .await
             .unwrap();

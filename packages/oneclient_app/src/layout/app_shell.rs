@@ -73,7 +73,7 @@ impl Component for AppShell {
             .on_global_file_hover_cancelled(move |_| drop_hovering.set(false))
             .on_file_drop(move |e: Event<FileEventData>| {
                 drop_hovering.set(false);
-                drop_pending.write().extend_from_slice(&e.file_paths);
+				drop_pending.write().extend_from_slice(&e.file_paths);
             })
             .child(AppNavbar)
             .child(AppHomeBackground)
@@ -275,6 +275,30 @@ pub struct HomeArtPrefetch;
 
 impl Component for HomeArtPrefetch {
     fn render(&self) -> impl IntoElement {
+        // Before the launcher is ready every query errors and a settled error is not
+        // retried until a new subscriber mounts
+        if !use_launcher().ready {
+            return rect().into_element();
+        }
+        HomeArtWarm.into_element()
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+struct HomeArtWarm;
+
+impl Component for HomeArtWarm {
+    fn render(&self) -> impl IntoElement {
+        let clusters_query = use_clusters();
+        let art = {
+            let reader = clusters_query.read();
+            let state = reader.state();
+            // No active cluster this early so this picks the same one `AppHomeBackground` will
+            let clusters = state.ok().map_or(&[][..], Vec::as_slice);
+            home_art(home_cluster(clusters, None))
+        };
+        let _ = art.use_bytes();
+
         rect().into_element()
     }
 }
@@ -576,12 +600,22 @@ pub(crate) fn gradient_overlay_radial() -> impl IntoElement {
         ))
 }
 
+pub(crate) fn navigate_back(at_home: bool) {
+    let router = RouterContext::get();
+    if router.can_go_back() {
+        router.go_back();
+    } else if !at_home {
+        let _ = router.push(Route::Home {});
+    }
+}
+
 pub(crate) fn back_button(destination: &str) -> impl IntoElement {
     Button::new()
         .ghost()
         .small()
         .on_press(|_| {
-            RouterContext::get().go_back();
+            // Only rendered off home so the history-empty fallback is reachable
+            navigate_back(false);
         })
         .margin(Gaps::new(0., 0., 0., 32.))
         .child(Icon::new(IconType::ArrowLeft).size(12.))

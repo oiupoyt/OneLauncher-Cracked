@@ -1,3 +1,4 @@
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedMcVersion {
     pub major: u32,

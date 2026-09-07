@@ -8,4 +8,4 @@ pub mod dao;
 pub mod models;
 
 pub use error::DbError;
-pub use pool::{DbPool, connect};
+pub use pool::{connect, DbPool};

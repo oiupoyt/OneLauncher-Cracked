@@ -56,6 +56,11 @@ impl ContentType {
         }
     }
 
+    #[must_use]
+    pub const fn reloads_in_game(self) -> bool {
+        matches!(self, Self::ResourcePack | Self::Shader)
+    }
+
     pub fn from_folder_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "mods" | "mod" => Some(Self::Mod),
@@ -128,7 +133,17 @@ pub enum HashAlgorithm {
 /// Applies only to browser-installed packages bundles have their own update flow
 /// The check always runs regardless of variant so "out of date" markers stay populated
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, EnumIter, StrumDisplay,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    Default,
+    EnumIter,
+    StrumDisplay,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum PackageUpdateMode {

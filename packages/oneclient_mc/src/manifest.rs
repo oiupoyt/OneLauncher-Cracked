@@ -7,10 +7,11 @@ use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::McCtx;
-use crate::error::{McError, McResult};
+
 use oneclient_common::domain::GameLoader;
 use oneclient_common::paths;
+use crate::McCtx;
+use crate::error::{McError, McResult};
 
 #[derive(Debug, Default)]
 pub struct MetadataStore {
@@ -41,7 +42,10 @@ impl MetadataStore {
     }
 
     #[tracing::instrument(level = "debug", skip(self, ctx))]
-    pub async fn get_vanilla_or_fetch(&mut self, ctx: &McCtx) -> McResult<&VanillaManifest> {
+    pub async fn get_vanilla_or_fetch(
+        &mut self,
+        ctx: &McCtx,
+    ) -> McResult<&VanillaManifest> {
         if !self.initialized() {
             self.initialize(ctx).await?;
         }
@@ -129,11 +133,10 @@ impl MetadataStore {
         let mut changed: u8 = 0;
 
         if self.inner.minecraft.is_none()
-            && let Ok(data) = fetch_vanilla_manifest(ctx).await
-        {
-            self.inner.minecraft = Some(data);
-            changed += 1;
-        }
+            && let Ok(data) = fetch_vanilla_manifest(ctx).await {
+                self.inner.minecraft = Some(data);
+                changed += 1;
+            }
 
         macro_rules! check_modded {
             ($var:ident) => {
@@ -145,7 +148,11 @@ impl MetadataStore {
                                 changed += 1;
                             }
                             Err(err) => {
-                                tracing::error!("failed to fetch manifest for {}: {}", loader, err);
+                                tracing::error!(
+                                    "failed to fetch manifest for {}: {}",
+                                    loader,
+                                    err
+                                );
                             }
                         }
                     }
@@ -196,7 +203,9 @@ impl MetadataStore {
         for loader in GameLoader::modded_loaders() {
             let manifest = match self.get_modded(*loader) {
                 Ok(manifest) => manifest,
-                Err(McError::NotModdedManifest(_)) => continue,
+                Err(McError::NotModdedManifest(_)) => {
+                    continue
+                }
                 Err(e) => return Err(e),
             };
 
@@ -233,7 +242,8 @@ async fn fetch_vanilla_manifest(ctx: &McCtx) -> McResult<VanillaManifest> {
                 let url = interfrost::api::minecraft::VERSION_MANIFEST_URL
                     .parse()
                     .map_err(McError::Url)?;
-                ctx.net
+                ctx
+                    .net
                     .send_json(Method::GET, url, None, &[])
                     .await
                     .map_err(McError::from)
@@ -243,12 +253,18 @@ async fn fetch_vanilla_manifest(ctx: &McCtx) -> McResult<VanillaManifest> {
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-async fn fetch_modded_manifest(ctx: &McCtx, loader: GameLoader) -> McResult<ModdedManifest> {
+async fn fetch_modded_manifest(
+    ctx: &McCtx,
+    loader: GameLoader,
+) -> McResult<ModdedManifest> {
     fetch_manifest(ctx, loader).await
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-async fn fetch_manifest<T: DeserializeOwned>(ctx: &McCtx, loader: GameLoader) -> McResult<T> {
+async fn fetch_manifest<T: DeserializeOwned>(
+    ctx: &McCtx,
+    loader: GameLoader,
+) -> McResult<T> {
     let url = format!(
         "{}/{}/v{}/manifest.json",
         ctx.net.config().metadata_api_url,
@@ -257,7 +273,8 @@ async fn fetch_manifest<T: DeserializeOwned>(ctx: &McCtx, loader: GameLoader) ->
     );
 
     let parsed = url.parse().map_err(McError::Url)?;
-    ctx.net
+    ctx
+        .net
         .send_json(Method::GET, parsed, None, &[])
         .await
         .map_err(McError::from)

@@ -9,14 +9,14 @@ use tokio::sync::RwLock;
 
 use crate::bundles::error::BundleError;
 use crate::bundles::manifest::{BundleManifest as RemoteBundleManifest, RemoteBundleRef};
-use crate::bundles::polymrpack;
 use crate::bundles::types::BundleArchive;
-use crate::ctx::ContentCtx;
-use crate::error::{ContentError, ContentResult};
+use crate::bundles::polymrpack;
+use oneclient_net::RequestError;
 use oneclient_common::domain::GameLoader;
 use oneclient_common::paths;
-use oneclient_net::RequestError;
 use oneclient_net::{EtagPolicy, fetch_cached};
+use crate::ctx::ContentCtx;
+use crate::error::{ContentError, ContentResult};
 
 #[derive(Debug, Clone)]
 pub struct Bundle {
@@ -37,7 +37,7 @@ impl Bundle {
         let loader = GameLoader::from_repr(row.mc_loader as u8)
             .ok_or(BundleError::InvalidLoader(row.mc_loader))?;
 
-        let launcher_dir = paths::launcher_dir()?;
+        let launcher_dir = paths::data_dir()?;
         let path = launcher_dir.join(&row.disk_path);
 
         Ok(Self {
@@ -94,6 +94,11 @@ impl BundlesManager {
             .into_iter()
             .map(|entry| entry.remote_path)
             .collect();
+
+        if remote_paths.is_empty() {
+            tracing::error!("bundle catalog listed no bundles; keeping the previous catalog");
+            return Ok(false);
+        }
 
         bundle_dao::hide_bundles_not_in(&ctx.db, &remote_paths).await?;
 
@@ -174,7 +179,8 @@ impl BundlesManager {
         loader: GameLoader,
     ) -> ContentResult<Vec<Bundle>> {
         let rows =
-            bundle_dao::list_visible_for_version_loader(&ctx.db, mc_version, loader as i64).await?;
+            bundle_dao::list_visible_for_version_loader(&ctx.db, mc_version, loader as i64)
+                .await?;
 
         rows.into_iter()
             .map(Bundle::try_from_row)
@@ -206,7 +212,7 @@ impl BundlesManager {
         let meta = polymrpack::read_meta_from_archive(&disk_path).await?;
 
         let relative_disk_path = disk_path
-            .strip_prefix(paths::launcher_dir()?)
+            .strip_prefix(paths::data_dir()?)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| disk_path.to_string_lossy().into_owned());
 
@@ -239,14 +245,17 @@ impl BundlesManager {
     /// bundles that never arrived
     /// `sync` commits it once all land
     #[tracing::instrument(level = "debug", skip(ctx))]
-    async fn fetch_manifest(ctx: &ContentCtx) -> ContentResult<Option<FetchedManifest>> {
+    async fn fetch_manifest(
+        ctx: &ContentCtx,
+    ) -> ContentResult<Option<FetchedManifest>> {
         let manifest_path = paths::bundles_dir()?.join("metadata.json");
         let url = format!(
             "{}/oneclient/bundles/metadata.json",
             ctx.net.config().meta_url_base
         );
 
-        let Some(fetched) = fetch_cached(&ctx.net, &url, &manifest_path, EtagPolicy::Defer).await?
+        let Some(fetched) =
+            fetch_cached(&ctx.net, &url, &manifest_path, EtagPolicy::Defer).await?
         else {
             return Ok(None);
         };
@@ -270,6 +279,7 @@ struct FetchedManifest {
     changed: bool,
     etag: Option<String>,
 }
+
 
 #[tracing::instrument(level = "debug", skip(ctx))]
 async fn download_bundle_if_needed(
@@ -297,6 +307,7 @@ async fn download_bundle_if_needed(
     .await
     .map_err(map_request_error)
 }
+
 
 fn map_request_error(err: RequestError) -> ContentError {
     match err {

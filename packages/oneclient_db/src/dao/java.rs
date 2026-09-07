@@ -14,45 +14,46 @@ pub async fn insert(
     is_jdk: bool,
     probe_version: u32,
 ) -> Result<JavaVersionRow, DbError> {
-    let row = sqlx::query_as::<_, JavaVersionRow>(
+    sqlx::query_as!(
+        JavaVersionRow,
         r#"
-INSERT INTO java_versions (absolute_path, major, version, vendor, os_arch, is_jdk, probe_version)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(absolute_path) DO UPDATE SET
-major = excluded.major,
-version = excluded.version,
-vendor = excluded.vendor,
-os_arch = excluded.os_arch,
-is_jdk = excluded.is_jdk,
-probe_version = excluded.probe_version
-RETURNING absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
-"#,
+		INSERT INTO java_versions (absolute_path, major, version, vendor, os_arch, is_jdk, probe_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(absolute_path) DO UPDATE SET
+			major = excluded.major,
+			version = excluded.version,
+			vendor = excluded.vendor,
+			os_arch = excluded.os_arch,
+			is_jdk = excluded.is_jdk,
+			probe_version = excluded.probe_version
+		RETURNING absolute_path, major, version, vendor, os_arch, is_jdk as "is_jdk: bool", probe_version
+		"#,
+        absolute_path,
+        i64::from(major),
+        version,
+        vendor,
+        os_arch,
+        is_jdk,
+        i64::from(probe_version),
     )
-    .bind(absolute_path)
-    .bind(i64::from(major))
-    .bind(version)
-    .bind(vendor)
-    .bind(os_arch)
-    .bind(is_jdk)
-    .bind(i64::from(probe_version))
     .fetch_one(pool)
-    .await?;
-
-    Ok(row)
+    .await
+    .map_err(Into::into)
 }
 
 pub async fn get_by_path(
     pool: &SqlitePool,
     absolute_path: &str,
 ) -> Result<Option<JavaVersionRow>, DbError> {
-    let row = sqlx::query_as::<_, JavaVersionRow>(
+    let row = sqlx::query_as!(
+        JavaVersionRow,
         r#"
-SELECT absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
-FROM java_versions
-WHERE absolute_path = ?
-"#,
+        SELECT absolute_path, major, version, vendor, os_arch, is_jdk as "is_jdk: bool", probe_version
+        FROM java_versions
+        WHERE absolute_path = ?
+        "#,
+        absolute_path,
     )
-    .bind(absolute_path)
     .fetch_optional(pool)
     .await?;
 
@@ -63,33 +64,30 @@ pub async fn get_latest_by_major(
     pool: &SqlitePool,
     major: u32,
 ) -> Result<Option<JavaVersionRow>, DbError> {
-    let row = sqlx::query_as::<_, JavaVersionRow>(
+    let row = sqlx::query_as!(
+        JavaVersionRow,
         r#"
-SELECT absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
-FROM java_versions
-WHERE major = ?
-ORDER BY probe_version DESC, is_jdk DESC
-LIMIT 1
-"#,
+		SELECT absolute_path, major, version, vendor, os_arch, is_jdk as "is_jdk: bool", probe_version
+		FROM java_versions
+		WHERE major = ?
+		ORDER BY version DESC
+		LIMIT 1
+		"#,
+        i64::from(major)
     )
-    .bind(i64::from(major))
     .fetch_optional(pool)
     .await?;
 
     Ok(row)
 }
 
-pub async fn delete_by_path(
-    pool: &SqlitePool,
-    absolute_path: &str,
-) -> Result<(), DbError> {
-    sqlx::query(
+pub async fn delete_by_path(pool: &SqlitePool, absolute_path: &str) -> Result<(), DbError> {
+    sqlx::query!(
         r#"
-DELETE FROM java_versions
-WHERE absolute_path = ?
-"#,
+        DELETE FROM java_versions WHERE absolute_path = ?
+        "#,
+        absolute_path,
     )
-    .bind(absolute_path)
     .execute(pool)
     .await?;
 
@@ -97,11 +95,13 @@ WHERE absolute_path = ?
 }
 
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<JavaVersionRow>, DbError> {
-    let rows = sqlx::query_as::<_, JavaVersionRow>(
+    let rows = sqlx::query_as!(
+        JavaVersionRow,
         r#"
-SELECT absolute_path, major, version, vendor, os_arch, is_jdk, probe_version
-FROM java_versions
-"#,
+        SELECT absolute_path, major, version, vendor, os_arch, is_jdk as "is_jdk: bool", probe_version
+        FROM java_versions
+        ORDER BY major DESC, version DESC
+        "#,
     )
     .fetch_all(pool)
     .await?;

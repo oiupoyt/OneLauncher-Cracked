@@ -4,9 +4,7 @@ use freya::router::*;
 use oneclient_common::parse_mc_version;
 
 use crate::components::{Button, Icon, IconType, TabBar, TabItem};
-use crate::hooks::{
-    use_cluster, use_dispatch, use_game_snapshot, use_launcher, use_version_metadata,
-};
+use crate::hooks::{use_cluster, use_dispatch, use_game_snapshot, use_launcher, use_version_metadata};
 use crate::routes::Route;
 use crate::theme::colors;
 use crate::ui::entrance_motion_layer;
@@ -109,9 +107,7 @@ impl Component for ClusterShell {
 
         // Queried unconditionally the shell can mount before the cluster list settles
         // and a conditional hook would change this component's hook count mid-life
-        let parsed = cluster
-            .as_ref()
-            .and_then(|c| parse_mc_version(&c.mc_version));
+        let parsed = cluster.as_ref().and_then(|c| parse_mc_version(&c.mc_version));
         let metadata = use_version_metadata(
             parsed.as_ref().map(|p| p.major),
             parsed.and_then(|p| p.key()),
@@ -203,12 +199,13 @@ impl Component for ClusterContentOutlet {
 
         use_side_effect_with_deps(&anim_finished, move |&finished| {
             if finished {
-                if matches!(&*router.peek(), AnimatedRouterContext::FromTo(_, _)) {
-                    router.write().settle();
-                }
                 Platform::get().send(UserEvent::RequestRedraw);
             }
         });
+
+        if anim_finished && matches!(&*router.peek(), AnimatedRouterContext::FromTo(_, _)) {
+            router.write().settle();
+        }
 
         const CONTENT_DX: f32 = 44.;
         let p = if anim_finished {

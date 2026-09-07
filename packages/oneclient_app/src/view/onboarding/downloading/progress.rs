@@ -251,10 +251,11 @@ fn build_stats(view: StatsView) -> Option<Element> {
     } else {
         // Both readings come off the same smoothed rate so they always agree
         match transfer.and_then(|t| t.eta_secs) {
-            Some(remaining) => {
-                parts.push(format!("~{} left", format_duration_hms(remaining as i64)))
-            }
-            None => parts.push("~— left".to_string()),
+            Some(remaining) => parts.push(format!(
+                "~{} left",
+                format_duration_hms(remaining as i64)
+            )),
+            None => parts.push("~- left".to_string()),
         }
 
         if let Some(speed) = transfer.map(|t| t.speed_bps).filter(|s| *s >= 1.0) {

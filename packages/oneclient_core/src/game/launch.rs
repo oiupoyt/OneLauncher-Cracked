@@ -8,21 +8,21 @@ use interfrost::api::minecraft::ArgumentType;
 use tokio::process::Command;
 
 use crate::ClusterStage;
-use crate::LauncherResult;
+use oneclient_auth::MinecraftAccount;
 use crate::clusters::Cluster;
-use crate::game::GameError;
+use oneclient_discord::Presence;
 use crate::game::session::SessionRecorder;
 use crate::game::tail::spawn_log_tail;
+use crate::game::GameError;
+use oneclient_mc::{
+    self as arguments, download_minecraft, download_version_info, get_loader_version,
+    game_files_missing, resolve_minecraft_version,
+};
+use oneclient_events::{GroupedProgressSession, LaunchStage};
 use crate::settings::GameSettingsProfile;
 use crate::state::LauncherState;
-use oneclient_auth::MinecraftAccount;
+use crate::LauncherResult;
 use oneclient_common::paths;
-use oneclient_discord::Presence;
-use oneclient_events::{GroupedProgressSession, LaunchStage};
-use oneclient_mc::{
-    self as arguments, download_minecraft, download_version_info, game_files_missing,
-    get_loader_version, resolve_minecraft_version,
-};
 
 pub fn is_running(state: &LauncherState, cluster_id: i64) -> bool {
     state.games.is_running(cluster_id)
@@ -44,11 +44,34 @@ pub async fn launch_cluster(
     tracing::info!(cluster_id, search_for_java, "launching cluster");
 
     let parallel = state.settings.read().allow_parallel_running_clusters;
-    if !parallel && state.games.is_running(cluster_id) {
-        tracing::warn!(cluster_id, "cluster already running; refusing launch");
+    if !parallel && state.games.is_active(cluster_id) {
+        tracing::warn!(cluster_id, "cluster already launching or running; refusing launch");
         return Err(GameError::AlreadyRunning(cluster_id).into());
     }
 
+    // A parallel attempt shares its entry with the session already under way, so
+    // clearing it here would drop that game's kill sender and pid
+    let adopted = state.games.is_active(cluster_id);
+
+    let result = start(state, cluster_id, account, search_for_java).await;
+
+    if result.is_err() && !adopted {
+        state.games.remove(cluster_id);
+        state
+            .services
+            .events
+            .game_stage(cluster_id, LaunchStage::Exited);
+    }
+
+    result
+}
+
+async fn start(
+    state: &Arc<LauncherState>,
+    cluster_id: i64,
+    account: &MinecraftAccount,
+    search_for_java: bool,
+) -> LauncherResult<LaunchedGame> {
     let events = state.services.events.clone();
     let stage = |s: LaunchStage| {
         state.games.set_stage(cluster_id, s);
@@ -75,6 +98,8 @@ pub async fn launch_cluster(
     if let Some(other) = state.games.dir_in_use_by(&game_dir, cluster_id) {
         return Err(GameError::DirectoryInUse(other).into());
     }
+
+    state.games.set_dir(cluster_id, game_dir.clone());
 
     let progress = GroupedProgressSession::start(
         &state.services.events,
@@ -173,10 +198,8 @@ pub async fn launch_cluster(
         "resolved launch metadata"
     );
 
-    let java = if let Some(runtime) = state
-        .java
-        .runtime_for_profile(profile.java_path.as_deref())
-        .await?
+    let java = if let Some(runtime) =
+        state.java.runtime_for_profile(profile.java_path.as_deref()).await?
     {
         runtime
     } else {
@@ -186,19 +209,13 @@ pub async fn launch_cluster(
             .map(|v| v.major_version)
             .ok_or(GameError::MissingJavaVersion)?;
 
-        state
-            .java
-            .prepare(major, search_for_java, false, None)
-            .await?
+        state.java.prepare(major, search_for_java, false, None).await?
     };
 
     match game_files_missing(&version_info, &java.os_arch, updated) {
         Ok(true) => {
             tracing::info!(cluster_id, "missing game files; repairing");
-            let _ = state
-                .clusters
-                .set_stage(cluster_id, ClusterStage::Repairing)
-                .await;
+            let _ = state.clusters.set_stage(cluster_id, ClusterStage::Repairing).await;
             stage(LaunchStage::Downloading);
             if let Err(err) = download_minecraft(
                 &state.services.mc(),
@@ -214,12 +231,14 @@ pub async fn launch_cluster(
                 stage(LaunchStage::Exited);
                 return Err(err.into());
             }
-            let _ = state
-                .clusters
-                .set_stage(cluster_id, ClusterStage::Ready)
-                .await;
+            let _ = state.clusters.set_stage(cluster_id, ClusterStage::Ready).await;
         }
         Ok(false) => {}
+        Err(err @ oneclient_mc::McError::NoNativesForPlatform { .. }) => {
+            progress.finish();
+            stage(LaunchStage::Exited);
+            return Err(err.into());
+        }
         Err(err) => tracing::warn!(cluster_id, error = %err, "repair check failed"),
     }
 
@@ -250,6 +269,7 @@ pub async fn launch_cluster(
         .join(&version_name)
         .join(format!("{version_name}.jar"));
     let natives = paths::natives_dir()?.join(&version_name);
+    polyio::create_dir_all(&natives).await?;
     let libraries = paths::libraries_dir()?;
     let assets = paths::assets_dir()?;
 
@@ -270,7 +290,7 @@ pub async fn launch_cluster(
         &libraries,
         &classpaths,
         &version_name,
-        profile.mem_max.unwrap_or(2048),
+        profile.mem_max.unwrap_or_else(oneclient_common::default_mem_max),
         profile.launch_args.clone().unwrap_or_default(),
         &java.os_arch,
         java.major,
@@ -307,6 +327,11 @@ pub async fn launch_cluster(
         "spawning minecraft process"
     );
     tracing::debug!(cluster_id, ?jvm_args, main_class = %version_info.main_class, "jvm arguments");
+
+    let use_discrete_gpu = state.settings.read().use_discrete_gpu;
+    if use_discrete_gpu {
+        oneclient_java::prefer_dedicated_gpu(std::path::Path::new(&java.absolute_path)).await;
+    }
 
     let mut command = base_command(&profile, &java.absolute_path);
     apply_env(&mut command, &profile);
@@ -352,14 +377,18 @@ pub async fn launch_cluster(
 
     stage(LaunchStage::Running);
     state.games.set_pid(cluster_id, pid);
-    state.games.set_dir(cluster_id, cwd.clone());
     state.discord.set_presence(Presence::Playing {
         cluster: cluster.name.clone(),
         mc_version: cluster.mc_version.clone(),
     });
 
-    let recorder =
-        SessionRecorder::start(state, cluster_id, profile.mem_max.unwrap_or(2048), &java).await;
+    let recorder = SessionRecorder::start(
+        state,
+        cluster_id,
+        profile.mem_max.unwrap_or_else(oneclient_common::default_mem_max),
+        &java,
+    )
+    .await;
 
     // Pinned to the session row so that if the launcher exits first the next
     // start can tell whether the game is still playing
@@ -540,23 +569,15 @@ pub(crate) async fn finalize_session(
         Exit::Observed { success: true, .. } => state
             .services
             .events
-            .notify("Game closed")
-            .body(format!("{name} exited"))
-            .send(),
+            .notify("Game closed").body(format!("{name} exited")).send(),
         Exit::Observed { display, .. } => state
             .services
             .events
-            .notify("Game crashed")
-            .body(format!("{name} exited with {display}"))
-            .error()
-            .send(),
+            .notify("Game crashed").body(format!("{name} exited with {display}")).error().send(),
         Exit::Failed(err) => state
             .services
             .events
-            .notify("Game error")
-            .body(format!("{name}: {err}"))
-            .error()
-            .send(),
+            .notify("Game error").body(format!("{name}: {err}")).error().send(),
         // Nothing was watching so there is no crash to report
         Exit::Inferred => {}
     }
@@ -648,12 +669,46 @@ fn base_command(profile: &GameSettingsProfile, java_path: &str) -> Command {
 
 fn apply_env(command: &mut Command, profile: &GameSettingsProfile) {
     command.env_remove("_JAVA_OPTIONS");
+
+    #[cfg(target_os = "linux")]
+    apply_discrete_gpu(command, profile);
+
     if let Some(env) = &profile.launch_env {
         for pair in env.split_whitespace() {
             if let Some((key, value)) = pair.split_once('=') {
                 command.env(key, value);
             }
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_discrete_gpu(command: &mut Command, profile: &GameSettingsProfile) {
+    let requested = profile
+        .os_extra
+        .as_ref()
+        .and_then(|extra| extra.use_discrete_gpu)
+        .unwrap_or(false);
+
+    if !requested {
+        return;
+    }
+
+    let gpus = crate::game::gpu::detect();
+    let env = crate::game::gpu::offload_env(&gpus);
+
+    if env.is_empty() {
+        tracing::info!(
+            gpus = gpus.len(),
+            "discrete GPU was requested but nothing here is a valid offload target; \
+             leaving the renderer alone"
+        );
+        return;
+    }
+
+    for (key, value) in env {
+        tracing::debug!(key, value, "offloading the game to the discrete GPU");
+        command.env(key, value);
     }
 }
 
@@ -677,6 +732,7 @@ async fn run_hook(hook: Option<&str>, cwd: &Path) {
     };
 
     command.current_dir(cwd);
+    oneclient_common::process::no_window(command.as_std_mut());
     if let Err(err) = command.status().await {
         tracing::warn!("hook '{hook}' failed: {err}");
     }
@@ -920,22 +976,25 @@ async fn patch_client_jar_skins(client_jar: &Path, skin_bytes: Option<&[u8]>, ta
 
     let orig_jar = client_jar.with_extension("jar.orig");
 
-    // If no custom skin, restore the unpatched original jar if available
+    // Ensure pristine backup exists
+    if !orig_jar.exists()
+        && let Err(e) = tokio::fs::copy(client_jar, &orig_jar).await
+    {
+        tracing::warn!(error = %e, "failed to backup client jar for skin replacement");
+        return;
+    }
+
     let Some(skin_bytes) = skin_bytes else {
+        // Restore clean vanilla jar
         if orig_jar.exists() {
             let _ = tokio::fs::copy(&orig_jar, client_jar).await;
-            let _ = tokio::fs::remove_file(&orig_jar).await;
-            tracing::info!(jar = %client_jar.display(), "restored original pristine client jar");
         }
         return;
     };
 
-    // Backup untouched original jar if not already backed up
-    if !orig_jar.exists()
-        && let Err(e) = tokio::fs::copy(client_jar, &orig_jar).await
-    {
-        tracing::warn!(error = %e, "failed to backup client jar before skin injection");
-        return;
+    // Always patch from the original pristine backup so we don't accumulate or leave wrong skins
+    if let Err(e) = tokio::fs::copy(&orig_jar, client_jar).await {
+        tracing::warn!(error = %e, "failed to restore pristine client jar before skin injection");
     }
 
     let jar_data = match polyio::read(&orig_jar).await {

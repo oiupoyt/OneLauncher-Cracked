@@ -1,10 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::bundles::ApplyBundleUpdatesResult;
+
 use crate::bundles::manager::BundlesManager;
+use crate::bundles::ApplyBundleUpdatesResult;
 use crate::bundles::updates::apply_bundle_updates_for_all_clusters;
-use crate::ctx::ContentCtx;
 use oneclient_events::GroupedProgressSession;
+use crate::ctx::ContentCtx;
 
 static BUNDLE_SYNCING: AtomicBool = AtomicBool::new(false);
 

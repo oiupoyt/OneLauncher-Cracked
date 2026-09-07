@@ -175,7 +175,13 @@ pub(crate) fn activity_badge(active: bool) -> impl IntoElement {
         .padding(Gaps::new_symmetric(2., 8.))
         .corner_radius(CornerRadius::new_all(999.))
         .background(color.with_a(38))
-        .child(label().text(text).font_size(11.).max_lines(1).color(color))
+        .child(
+            label()
+                .text(text)
+                .font_size(11.)
+                .max_lines(1)
+                .color(color),
+        )
 }
 
 fn badge(
@@ -391,6 +397,7 @@ mod tests {
             display_version: None,
             provider: Some(ProviderId::Modrinth),
             published_at: None,
+            seen_status: oneclient_core::SeenStatus::Seen,
         }
     }
 
@@ -438,10 +445,7 @@ mod tests {
         );
 
         let sodium = entry(&map, "sodium");
-        assert!(
-            sodium.is_version("v1"),
-            "the older version is still in there"
-        );
+        assert!(sodium.is_version("v1"), "the older version is still in there");
         assert!(sodium.is_version("v2"));
         assert_eq!(
             sodium.find_version("v2").and_then(|v| v.hash.clone()),
@@ -461,11 +465,7 @@ mod tests {
         );
 
         let sodium = entry(&map, "sodium");
-        assert_eq!(
-            sodium.source,
-            InstallSource::Bundled,
-            "the bundle owns the project"
-        );
+        assert_eq!(sodium.source, InstallSource::Bundled, "the bundle owns the project");
         assert_eq!(
             sodium.find_version("v1").map(|v| v.source),
             Some(InstallSource::Bundled)

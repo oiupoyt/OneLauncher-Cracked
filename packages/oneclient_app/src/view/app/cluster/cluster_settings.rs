@@ -1,8 +1,10 @@
 use freya::prelude::*;
 use oneclient_common::Patch;
-use oneclient_common::domain::GameLoader;
-use oneclient_core::settings::{GameSettingsProfile, PackageUpdateMode, ProfileUpdate, Resolution};
 use oneclient_java::JavaRuntime;
+use oneclient_common::domain::GameLoader;
+use oneclient_core::settings::{
+    GameSettingsProfile, PackageUpdateMode, ProfileUpdate, Resolution,
+};
 
 use crate::components::{
     Button, Dropdown, Icon, IconType, ScrollArea, TextInput, memory_field, toggle,
@@ -68,27 +70,6 @@ impl Component for ClusterSettings {
                     .width(Size::fill())
                     .height(Size::fill())
                     .spacing(4.)
-                    .child(section_header("LOADER"))
-                    .child(
-                        LoaderRow {
-                            cluster_id,
-                            loader,
-                            selected: cluster.mc_loader_version.clone(),
-                            versions,
-                        }
-                        .into_element(),
-                    )
-                    .child(section_header("JAVA"))
-                    .child(
-                        JavaRow {
-                            cluster_id,
-                            value: profile.java_path.clone(),
-                            global: global.java_path.clone(),
-                            runtimes,
-                        }
-                        .into_element(),
-                    )
-                    .child(text_row(cluster_id, TextField::JvmArgs, &profile, &global))
                     .child(section_header("GAME"))
                     .child(
                         ToggleRow {
@@ -110,16 +91,19 @@ impl Component for ClusterSettings {
                         MemoryRow {
                             cluster_id,
                             value: profile.mem_max,
-                            global: global.mem_max.unwrap_or(4096),
+                            global: global
+                                .mem_max
+                                .unwrap_or_else(oneclient_common::default_mem_max),
                         }
                         .into_element(),
                     )
-                    .child(section_header("CONTENT"))
+                    .child(section_header("LOADER"))
                     .child(
-                        BrowserUpdateModeRow {
+                        LoaderRow {
                             cluster_id,
-                            value: profile.browser_update_mode,
-                            global: global.browser_update_mode.unwrap_or_default(),
+                            loader,
+                            selected: cluster.mc_loader_version.clone(),
+                            versions,
                         }
                         .into_element(),
                     )
@@ -131,10 +115,32 @@ impl Component for ClusterSettings {
                         }
                         .into_element(),
                     )
+                    .child(section_header("SHORTCUT"))
+                    .child(ShortcutRow { cluster_id }.into_element())
+                    .child(section_header("JAVA"))
+                    .child(
+                        JavaRow {
+                            cluster_id,
+                            value: profile.java_path.clone(),
+                            global: global.java_path.clone(),
+                            runtimes,
+                        }
+                        .into_element(),
+                    )
+                    .child(text_row(cluster_id, TextField::JvmArgs, &profile, &global))
                     .child(section_header("PROCESS"))
                     .child(text_row(cluster_id, TextField::Pre, &profile, &global))
                     .child(text_row(cluster_id, TextField::Wrapper, &profile, &global))
                     .child(text_row(cluster_id, TextField::Post, &profile, &global))
+                    .child(section_header("CONTENT"))
+                    .child(
+                        BrowserUpdateModeRow {
+                            cluster_id,
+                            value: profile.browser_update_mode,
+                            global: global.browser_update_mode.unwrap_or_default(),
+                        }
+                        .into_element(),
+                    )
                     .child(section_header("REPAIR"))
                     .child(VerifyFilesRow { cluster_id }.into_element()),
             )
@@ -251,6 +257,32 @@ impl Component for ToggleRow {
 }
 
 #[derive(PartialEq)]
+struct ShortcutRow {
+    cluster_id: i64,
+}
+
+impl Component for ShortcutRow {
+    fn render(&self) -> impl IntoElement {
+        let cluster_id = self.cluster_id;
+        let dispatch = use_dispatch();
+
+        let button = Button::new()
+            .small()
+            .secondary()
+            .on_press(move |_| dispatch.create_cluster_shortcut(cluster_id))
+            .text("Create Shortcut");
+
+        settings_row(
+            IconType::Rocket02,
+            "Desktop Shortcut",
+            "Save a shortcut that starts this version straight from your desktop, \
+             without opening the launcher first.",
+            button,
+        )
+    }
+}
+
+#[derive(PartialEq)]
 struct VerifyFilesRow {
     cluster_id: i64,
 }
@@ -271,11 +303,7 @@ impl Component for VerifyFilesRow {
             .secondary()
             .enabled(!running)
             .maybe(!running, |el| el.on_press(on_press))
-            .text(if running {
-                "Verifying..."
-            } else {
-                "Verify Files"
-            });
+            .text(if running { "Verifying..." } else { "Verify Files" });
 
         settings_row(
             IconType::ClipboardCheck,

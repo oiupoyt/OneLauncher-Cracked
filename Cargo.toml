@@ -9,13 +9,13 @@ authors = [
   "Polyfrost",
   "Polyfrost Contributors",
 ]
-documentation = "https://github.com/Polyfrost/OneLauncher"
+documentation = "https://github.com/oiupoyt/OneLauncher-Cracked"
 edition = "2024"
 homepage = "https://polyfrost.org/projects/oneclient"
 license = "GPL-3.0-only"
 readme = "README.md"
-repository = "https://github.com/Polyfrost/OneLauncher"
-version = "2.2.3-c2"
+repository = "https://github.com/oiupoyt/OneLauncher-Cracked"
+version = "2.3.1-c1"
 
 [workspace.dependencies]
 # core
@@ -115,6 +115,7 @@ indicatif = {version = "=0.18.4", features = ["tokio"]}
 junction = {version = "=2.0.0"}
 notify = {version = "=8.2.0"}
 parking_lot = {version = "=0.12.5"}
+pulldown-cmark = {version = "=0.13.4", default-features = false}
 rand = {version = "=0.10.1"}
 regex = {version = "=1.12.3"}
 rust-embed = {version = "=8.12.0", features = ["include-exclude", "compression", "debug-embed"]}
@@ -123,7 +124,9 @@ serde = {version = "=1.0.228"}
 serde_json = {version = "=1.0.150"}
 serde_repr = {version = "=0.1.20"}
 sysinfo = {version = "=0.39.5"}
+toml = {version = "=1.1.4", default-features = false, features = ["parse", "serde"]}
 trash = {version = "=5.2.6"}
+percent-encoding = {version = "=2.3.2"}
 url = {version = "=2.5.8", features = ["serde"]}
 uuid = {version = "=1.23.1", features = ["serde", "v4"]}
 
@@ -136,16 +139,11 @@ syn = {version = "=2.0.117"}
 thiserror = {version = "=2.0.18"}
 
 # ui
-freya = {version = "=0.5.0-rc.4", features = ["engine", "winit", "router", "remote-asset", "sdk", "markdown", "query", "radio", "titlebar"]}
-freya-skia-safe = "=0.99.1" # required for the SKSL player renderer
+freya = {git = "https://github.com/marc2332/freya", branch = "fix/skip-basic-render-driver", features = ["engine", "winit", "router", "remote-asset", "sdk", "query", "radio", "titlebar"]}
+freya-core = {git = "https://github.com/marc2332/freya", branch = "fix/skip-basic-render-driver"}
+freya-testing = {git = "https://github.com/marc2332/freya", branch = "fix/skip-basic-render-driver"}
+freya-skia-safe = "=0.100.0" # required for the SKSL player renderer
 image = {version = "=0.25.10", default-features = false, features = ["png", "jpeg"]}
-
-[profile.dev]
-debug = 1
-
-[profile.dev.package."*"]
-opt-level = 3
-debug = false
 
 [profile.release]
 codegen-units = 1
@@ -161,3 +159,11 @@ inherits = "release"
 
 debug = true
 strip = false
+
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+

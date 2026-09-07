@@ -1,7 +1,9 @@
-use crate::{LauncherError, LauncherResult};
+
+
 use oneclient_common::paths;
-use oneclient_net::RequestClient;
 use oneclient_net::{EtagPolicy, fetch_cached};
+use oneclient_net::RequestClient;
+use crate::{LauncherError, LauncherResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangelogGroup {
@@ -32,7 +34,10 @@ pub fn parse_changelog(data: &str) -> Vec<ChangelogGroup> {
 
 #[tracing::instrument(level = "debug", skip(net))]
 pub async fn fetch_changelog(net: &RequestClient) -> LauncherResult<String> {
-    let url = format!("{}/oneclient/CHANGE_LOG.md", net.config().meta_url_base);
+    let url = format!(
+        "{}/oneclient/CHANGE_LOG.md",
+        net.config().meta_url_base
+    );
     let cache_path = paths::caches_dir()?.join("CHANGE_LOG.md");
 
     let fetched = fetch_cached(net, &url, &cache_path, EtagPolicy::CommitNow)
