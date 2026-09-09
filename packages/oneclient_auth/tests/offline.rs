@@ -108,3 +108,29 @@ async fn default_account_returns_expired_token_without_refreshing() {
     assert_eq!(account.id, msa_id);
     assert!(account.is_expired());
 }
+
+#[tokio::test]
+async fn offline_account_for_launch_succeeds_without_microsoft() {
+    isolate_launcher_dir();
+
+    let (events, _rx) = oneclient_events::EventBus::channel();
+    let net = oneclient_net::RequestClient::new(oneclient_net::NetConfig::default()).expect("net client");
+    let mut store = CredentialsStore::default();
+    let offline = store.add_offline_account("Steve".into()).unwrap();
+    let service = oneclient_auth::AuthService::with_store(store, net, events);
+
+    let launched = service
+        .account_for_launch(offline.id)
+        .await
+        .expect("offline account must be allowed for launch without Microsoft account");
+    assert_eq!(launched.id, offline.id);
+    assert_eq!(launched.username, "Steve");
+    assert_eq!(launched.kind, AccountKind::Offline);
+
+    let default_launched = service
+        .default_account_for_launch()
+        .await
+        .expect("default offline account must be allowed for launch")
+        .expect("default account should exist");
+    assert_eq!(default_launched.id, offline.id);
+}
