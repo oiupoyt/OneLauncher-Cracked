@@ -225,7 +225,7 @@ pub struct NotificationState {
     /// Resumes the launch that opened the update modal
     /// Held here not by the launch task
     /// because every way the modal can end goes through this state
-    package_updates_done: Option<oneshot::Sender<()>>,
+    package_updates_done: Option<oneshot::Sender<Vec<BrowserPackageUpdate>>>,
     optional_mods_done: Option<oneshot::Sender<()>>,
 }
 
@@ -388,7 +388,7 @@ impl NotificationState {
     pub fn open_package_updates(
         &mut self,
         groups: Vec<PackageUpdateGroup>,
-        done: Option<oneshot::Sender<()>>,
+        done: Option<oneshot::Sender<Vec<BrowserPackageUpdate>>>,
     ) {
         let groups: Vec<PackageUpdateGroup> = groups
             .into_iter()
@@ -397,19 +397,25 @@ impl NotificationState {
 
         if groups.is_empty() {
             if let Some(done) = done {
-                let _ = done.send(());
+                let _ = done.send(Vec::new());
             }
             return;
         }
 
         // A second modal would strand the first launch so release the old continuation first
-        self.finish_package_updates();
+        self.finish_package_updates(Vec::new());
         self.package_updates = Some(groups);
         self.package_updates_done = done;
     }
 
     pub fn close_package_updates(&mut self) {
-        self.finish_package_updates();
+        self.finish_package_updates(Vec::new());
+    }
+
+    /// The launch applies these itself so the game starts on the versions the
+    /// player just picked rather than racing them
+    pub fn proceed_package_updates(&mut self, chosen: Vec<BrowserPackageUpdate>) {
+        self.finish_package_updates(chosen);
     }
 
     /// Applying and skipping are both answers either drops the row and can close the modal
@@ -426,16 +432,16 @@ impl NotificationState {
         groups.retain(|group| !group.packages.is_empty());
 
         if groups.is_empty() {
-            self.finish_package_updates();
+            self.finish_package_updates(Vec::new());
         }
     }
 
     /// Safe to call when nothing is open so every exit path can call it unconditionally
-    fn finish_package_updates(&mut self) {
+    fn finish_package_updates(&mut self, chosen: Vec<BrowserPackageUpdate>) {
         self.package_updates = None;
         if let Some(done) = self.package_updates_done.take() {
             // A send failure means the launch task is gone nothing left to resume
-            let _ = done.send(());
+            let _ = done.send(chosen);
         }
     }
 
@@ -465,9 +471,11 @@ impl NotificationState {
                 );
                 self.push_ephemeral_toast(entry_id, MESSAGE_TOAST_TTL);
             }
-            // The sign-in modal renders this progress itself it must not also become a toast
+            
             Event::Progress(ProgressEvent::Update { id, .. })
                 if id == oneclient_auth::MICROSOFT_LOGIN_PROGRESS => {}
+            Event::Progress(ProgressEvent::Update { id, .. })
+                if id == oneclient_core::storage::STORAGE_SCAN_PROGRESS => {}
             Event::Progress(ProgressEvent::Update {
                 id,
                 label,

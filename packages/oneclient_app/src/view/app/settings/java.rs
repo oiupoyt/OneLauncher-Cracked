@@ -23,7 +23,7 @@ impl Component for SettingsJava {
         let mut show_manager = use_state(|| false);
         let pending_remove = use_state(|| None::<PendingRemove>);
 
-        #[allow(dead_code)]
+        #[allow(dead_code, unused_variables)]
         fn invalidate_runtimes(dispatch: Actions) {
             spawn(async move {
                 invalidate_java_queries().await;

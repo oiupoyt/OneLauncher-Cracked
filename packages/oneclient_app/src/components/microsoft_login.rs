@@ -1,9 +1,9 @@
-use crate::state::LoginProgress;
 use freya::prelude::*;
 use freya::query::{MutationCapability, MutationStateData, UseMutation};
 use freya::text_edit::Clipboard;
-use oneclient_auth::{AuthErrorGuidance, MicrosoftLoginSession};
 use oneclient_core::LauncherError;
+use oneclient_auth::{AuthErrorGuidance, MicrosoftLoginSession};
+use crate::state::LoginProgress;
 
 use crate::components::{Button, Icon, IconType, OverlayPopup};
 use crate::hooks::{
@@ -185,7 +185,7 @@ pub(crate) fn login_dialog(
     on_close: impl FnMut() + Clone + 'static,
 ) -> impl IntoElement {
     let mut close_scrim = on_close.clone();
-    let mut close_cancel = on_close.clone();
+    let mut close_cancel = on_close;
     OverlayPopup::new()
         .on_close(move |()| close_scrim())
         .child(
@@ -225,9 +225,10 @@ pub(crate) fn login_dialog(
                                         .spacing(18.)
                                         .child(browser_dialog_body(auth_url))
                                         .child(dialog_divider())
-                                        .child(device_code_dialog_body(user_code, verification_uri))
-                                        .child(dialog_divider())
-                                        .child(offline_mode_dialog_body(on_close.clone()))
+                                        .child(device_code_dialog_body(
+                                            user_code,
+                                            verification_uri,
+                                        ))
                                         .child(status_row(status, error))
                                         .maybe_child(guidance.map(guidance_block)),
                                 ),
@@ -313,13 +314,17 @@ fn status_row(status: Option<LoginProgress>, error: Option<String>) -> impl Into
 }
 
 fn guidance_block(guidance: AuthErrorGuidance) -> impl IntoElement {
-    let mut steps = rect().vertical().width(Size::fill()).spacing(6.).child(
-        label()
-            .text("What you can do:")
-            .font_size(12.)
-            .font_weight(FontWeight::SEMI_BOLD)
-            .color(colors::fg_primary()),
-    );
+    let mut steps = rect()
+        .vertical()
+        .width(Size::fill())
+        .spacing(6.)
+        .child(
+            label()
+                .text("What you can do:")
+                .font_size(12.)
+                .font_weight(FontWeight::SEMI_BOLD)
+                .color(colors::fg_primary()),
+        );
 
     for (index, step) in guidance.steps_to_fix.into_iter().enumerate() {
         steps = steps.child(
@@ -435,42 +440,6 @@ fn device_code_dialog_body(code: String, verification_uri: String) -> impl IntoE
                         .child(Icon::new(IconType::LinkExternal01).size(16.))
                         .text("Open in browser"),
                 ),
-        )
-        .into_element()
-}
-
-fn offline_mode_dialog_body(on_close: impl FnMut() + Clone + 'static) -> impl IntoElement {
-    let on_close_btn = on_close;
-
-    rect()
-        .vertical()
-        .width(Size::fill())
-        .cross_align(Alignment::Center)
-        .spacing(10.)
-        .child(
-            label()
-                .text("Or Play Offline (LAN / Offline Servers)")
-                .font_size(13.)
-                .font_weight(FontWeight::MEDIUM)
-                .color(colors::fg_secondary()),
-        )
-        .child(
-            Button::new()
-                .primary()
-                .on_press(move |_| {
-                    let mut close_cb = on_close_btn.clone();
-                    spawn(async move {
-                        if let Ok(state) = crate::launcher::state() {
-                            let res = state.auth.add_offline_account("Player".to_string()).await;
-                            if let Ok(acc) = res {
-                                let _ = state.auth.set_default_account(Some(acc.id)).await;
-                            }
-                        }
-                        close_cb();
-                    });
-                })
-                .text("Play Offline as Player")
-                .into_element(),
         )
         .into_element()
 }

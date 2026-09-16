@@ -20,9 +20,10 @@ use oneclient_core::clusters::Cluster;
 use oneclient_db::models::ClusterId;
 
 use crate::hooks::{
-    ActiveClusterState, BrowserCompatState, BrowserStateStore, use_active_cluster_id, use_clusters,
-    use_game_snapshot, use_launcher, use_provide_active_cluster, use_provide_browser_compat,
-    use_provide_browser_state, use_splash,
+    ActiveClusterState, BrowserCompatState, BrowserStateStore, BrowserTypeState,
+    use_active_cluster_id, use_clusters, use_game_snapshot, use_launcher,
+    use_provide_active_cluster, use_provide_browser_compat, use_provide_browser_state,
+    use_provide_browser_type, use_splash,
 };
 use crate::theme::colors;
 use oneclient_events::LaunchStage;
@@ -42,6 +43,9 @@ impl Component for AppShell {
 
         let browser_state = use_state(HashMap::new);
         use_provide_browser_state(BrowserStateStore(browser_state));
+
+        let browser_type = use_state(|| "mod".to_string());
+        use_provide_browser_type(BrowserTypeState(browser_type));
 
         // `FileDrop` bubbles so anything a drop zone doesn't `stop_propagation()` lands here
         let mut drop_hovering = use_state(|| false);
@@ -229,7 +233,10 @@ fn copy_error_button(message: &str, dispatch: crate::Actions) -> impl IntoElemen
         .into_element()
 }
 
-pub(crate) fn appshell_overlay() -> Rect {
+pub(crate) fn appshell_overlay(alpha: f32) -> Rect {
+    let alpha = alpha.clamp(0., 1.);
+    let scale = |a: u8| (f32::from(a) * alpha).round() as u8;
+
     rect()
         .width(Size::fill())
         .height(Size::fill())
@@ -242,15 +249,15 @@ pub(crate) fn appshell_overlay() -> Rect {
                 .width(Size::fill())
                 .background(
                     LinearGradient::new()
-                        .stop((Color::BLACK.with_a(100), 0.))
-                        .stop((colors::page().with_a(255), 95.0)),
+                        .stop((Color::BLACK.with_a(scale(100)), 0.))
+                        .stop((colors::page().with_a(scale(255)), 95.0)),
                 ),
         )
         .child(
             rect()
                 .height(Size::fill())
                 .width(Size::fill())
-                .background(colors::page()),
+                .background(colors::page().with_a(scale(255))),
         )
 }
 

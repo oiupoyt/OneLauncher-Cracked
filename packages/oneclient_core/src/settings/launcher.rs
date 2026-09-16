@@ -13,25 +13,12 @@ pub enum ViewLayout {
 	List,
 }
 
-pub const DEFAULT_GRID_COLUMNS: u8 = 3;
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(default)]
 pub struct ViewState {
 	pub layout: ViewLayout,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub sort: Option<String>,
-	pub columns: u8,
-}
-
-impl Default for ViewState {
-	fn default() -> Self {
-		Self {
-			layout: ViewLayout::default(),
-			sort: None,
-			columns: DEFAULT_GRID_COLUMNS,
-		}
-	}
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -42,7 +29,6 @@ pub struct LauncherSettings {
 	pub auto_update: bool,
 	pub crash_reporting: bool,
 	pub enable_gamemode: bool,
-	pub use_discrete_gpu: bool,
 	pub discord_enabled: bool,
 	pub max_concurrent_requests: usize,
 	pub global_game_settings: GameSettingsProfile,
@@ -52,6 +38,8 @@ pub struct LauncherSettings {
 	pub animations_enabled: bool,
 	pub view_states: BTreeMap<String, ViewState>,
 	pub seen_onboarding: bool,
+	pub skip_microsoft_java: bool,
+	pub microsoft_java_migrated: bool,
 	pub accepted_tos_version: u32,
 	pub accepted_privacy_version: u32,
 	pub declined_tos: bool,
@@ -84,7 +72,6 @@ impl Default for LauncherSettings {
 			crash_reporting: true,
 			discord_enabled: true,
 			enable_gamemode: false,
-			use_discrete_gpu: false,
 			max_concurrent_requests: 25,
 			global_game_settings: GameSettingsProfile::default_global_profile(),
 			allow_parallel_running_clusters: false,
@@ -93,6 +80,8 @@ impl Default for LauncherSettings {
 			animations_enabled: true,
 			view_states: BTreeMap::new(),
 			seen_onboarding: false,
+			skip_microsoft_java: false,
+			microsoft_java_migrated: false,
 			accepted_tos_version: 0,
 			accepted_privacy_version: 0,
 			declined_tos: false,

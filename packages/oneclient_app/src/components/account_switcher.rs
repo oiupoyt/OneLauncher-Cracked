@@ -6,14 +6,14 @@ use freya::{
 use oneclient_auth::MinecraftAccount;
 
 use crate::{
+    ui::{divider},
     Route,
     components::{Avatar, Button, Icon, IconType, OverlayPopup},
     hooks::{
-        try_accounts, try_default_account, use_account_switcher_open, use_accounts,
-        use_current_account, use_dispatch,
+        SetDefaultAccountKeys, try_accounts, try_default_account, use_account_switcher_open,
+        use_accounts, use_current_account, use_dispatch, use_set_default_account,
     },
     theme::colors,
-    ui::divider,
 };
 
 #[derive(PartialEq)]
@@ -90,7 +90,8 @@ impl Component for AccountPanel {
             .spacing(8.)
             .opacity(progress)
             .margin(Gaps::new((1.0 - progress) * -8.0, 0., 0., 0.))
-            .background(colors::page_elevated())
+            .background(colors::page_elevated().with_a(220))
+            .blur(12.)
             .corner_radius(CornerRadius::new_all(12.))
             .border(
                 Border::new()
@@ -156,19 +157,15 @@ impl Component for AccountRow {
         let active = self.active;
 
         let dispatch = use_dispatch();
+        let set_default = use_set_default_account();
         let mut hovered = use_state(|| false);
 
         let switch = move |_| {
             if active {
                 return;
             }
+            set_default.mutate(SetDefaultAccountKeys { id: Some(id) });
             dispatch.close_account_switcher();
-            spawn(async move {
-                if let Ok(state) = crate::launcher::state() {
-                    let _ = state.auth.set_default_account(Some(id)).await;
-                    crate::hooks::invalidate_auth_queries(Some(id)).await;
-                }
-            });
         };
 
         rect()

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use freya::prelude::spawn_forever;
 use freya::radio::RadioStation;
+use oneclient_cluster::profiles::list_named_profiles;
 use oneclient_cluster::{
-    ClusterStage, ClusterUpdate, GameSettingsProfile, PackageUpdateMode, ProfileUpdate,
+    Cluster, ClusterStage, ClusterUpdate, GameSettingsProfile, PackageUpdateMode, ProfileUpdate,
 };
 use oneclient_common::domain::{ContentType, ProviderId};
 use oneclient_content::packages::{LiveSync, LocalImportReport};
@@ -85,6 +86,26 @@ fn plan_launch_updates(
         PackageUpdateMode::Automatic => LaunchUpdatePlan::Apply(pending),
         PackageUpdateMode::Prompt => LaunchUpdatePlan::Prompt(pending),
     }
+}
+
+/// Names the clusters that pinned `java_path` to this runtime by hand
+fn clusters_pinned_to_java(
+    profiles: &[GameSettingsProfile],
+    clusters: &[Cluster],
+    absolute_path: &str,
+) -> Vec<String> {
+    profiles
+        .iter()
+        .filter(|profile| profile.java_path.as_deref() == Some(absolute_path))
+        .map(|profile| {
+            clusters
+                .iter()
+                .find(|cluster| {
+                    cluster.setting_profile_name.as_deref() == Some(profile.name.as_str())
+                })
+                .map_or_else(|| profile.name.clone(), |cluster| cluster.name.clone())
+        })
+        .collect()
 }
 
 /// The pump alone owns the toast timers so adding or removing a toast has to
@@ -275,6 +296,13 @@ impl Actions {
         }
     }
 
+    pub fn skip_microsoft_java(&self) {
+        if let Some(updated) = self.mutate_settings(|settings| settings.skip_microsoft_java = true)
+        {
+            self.persist(updated);
+        }
+    }
+  
     pub fn reset_onboarding(&self) {
         if let Some(updated) = self.mutate_settings(|settings| {
             settings.seen_onboarding = false;
@@ -560,6 +588,29 @@ impl Actions {
         let path = path.into();
         spawn_forever(async move {
             let Ok(state) = launcher::state() else { return };
+            let events = state.services.events.clone();
+
+            // Checks if the jdk is pinned to the cluster
+            match (
+                list_named_profiles(&state.services.db).await,
+                state.clusters.list().await,
+            ) {
+                (Ok(profiles), Ok(clusters)) => {
+                    let pinned = clusters_pinned_to_java(&profiles, &clusters, &path);
+                    if !pinned.is_empty() {
+                        events
+                            .notify("Cannot remove this JDK")
+                            .body(format!("It is used by cluster: {}", pinned.join(", ")))
+                            .error()
+                            .send();
+                        return;
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => {
+                    tracing::error!("could not check whether the java runtime is in use: {err:#}");
+                }
+            }
+
             match state.java.remove_runtime(&path).await {
                 Ok(()) => super::invalidate_java_queries().await,
                 Err(err) => tracing::error!("failed to remove java runtime: {err:#}"),
@@ -743,6 +794,7 @@ impl Actions {
                     state.bundles.as_ref(),
                     &content,
                     Some(&session),
+                    None,
                 )
                 .await
                 {
@@ -792,6 +844,12 @@ impl Actions {
             }
 
             actions.close_optional_mods();
+        });
+    }
+
+    pub fn proceed_package_updates(&self, chosen: Vec<oneclient_core::BrowserPackageUpdate>) {
+        self.with_engine(move |state| {
+            state.notifications.proceed_package_updates(chosen)
         });
     }
 
@@ -1032,7 +1090,7 @@ impl Actions {
             if install.result.is_ok() {
                 // Before the refresh below so the version list never renders
                 // the moment where both copies read as active
-                if let Err(err) = oneclient_content::bundles::reconcile_duplicate_activity(
+                if let Err(err) = oneclient_content::packages::reconcile_duplicate_activity(
                     cluster_id,
                     &state.services.content(),
                 )
@@ -1162,6 +1220,7 @@ impl Actions {
                 cluster_id,
                 state.bundles.as_ref(),
                 &state.services.content(),
+                None,
             )
             .await
             {
@@ -1178,7 +1237,9 @@ impl Actions {
                 }
             };
 
-            actions.record_bundle_checks([cluster_id]);
+            if result.settled() {
+                actions.record_bundle_checks([cluster_id]);
+            }
 
             super::invalidate_cluster_queries().await;
             if let Some(spec) =
@@ -1304,7 +1365,18 @@ impl Actions {
             if synced
                 && let Ok(clusters) = state.clusters.list().await
             {
-                actions.record_bundle_checks(clusters.iter().map(|cluster| cluster.id));
+                let unsettled: std::collections::HashSet<i64> = changed
+                    .iter()
+                    .filter(|(_, result)| !result.settled())
+                    .map(|(cluster_id, _)| *cluster_id)
+                    .collect();
+
+                actions.record_bundle_checks(
+                    clusters
+                        .iter()
+                        .map(|cluster| cluster.id)
+                        .filter(|cluster_id| !unsettled.contains(cluster_id)),
+                );
             }
 
             actions
@@ -1384,23 +1456,14 @@ impl Actions {
             return;
         }
 
-        let applied = match tokio::time::timeout(
-            BUNDLE_APPLY_BUDGET,
-            oneclient_core::apply_bundle_updates(cluster_id, state.bundles.as_ref(), &content),
+        let result = match oneclient_core::apply_bundle_updates(
+            cluster_id,
+            state.bundles.as_ref(),
+            &content,
+            Some(Instant::now() + BUNDLE_APPLY_BUDGET),
         )
         .await
         {
-            Ok(applied) => applied,
-            Err(_elapsed) => {
-                tracing::warn!(
-                    cluster_id,
-                    "bundle updates exceeded their launch budget, launching anyway"
-                );
-                return;
-            }
-        };
-
-        let result = match applied {
             Ok(result) => result,
             Err(err) => {
                 tracing::warn!(
@@ -1412,7 +1475,14 @@ impl Actions {
             }
         };
 
-        if synced {
+        if result.stopped_early {
+            tracing::warn!(
+                cluster_id,
+                "bundle updates ran out of their launch budget; the rest go at the next launch"
+            );
+        }
+
+        if synced && result.settled() {
             self.record_bundle_checks([cluster_id]);
         }
 
@@ -1485,7 +1555,10 @@ impl Actions {
                 else {
                     return;
                 };
-                self.prompt_package_updates(group).await;
+                let chosen = self.prompt_package_updates(group).await;
+                if !chosen.is_empty() {
+                    self.apply_updates_for_launch(state, &chosen).await;
+                }
             }
         }
     }
@@ -1568,6 +1641,8 @@ impl Actions {
                 .finish_grouped_as_actions(&mut app.inbox, session_id, spec);
         });
 
+        super::invalidate_cluster_queries().await;
+
         if applied > 0 {
             super::invalidate_cluster_queries().await;
         }
@@ -1613,7 +1688,10 @@ impl Actions {
         let _ = wait.await;
     }
 
-    async fn prompt_package_updates(&self, group: PackageUpdateGroup) {
+    async fn prompt_package_updates(
+        &self,
+        group: PackageUpdateGroup,
+    ) -> Vec<oneclient_core::BrowserPackageUpdate> {
         let (done, wait) = tokio::sync::oneshot::channel();
 
         self.with_engine(move |state| {
@@ -1621,71 +1699,7 @@ impl Actions {
             state.center_open = false;
         });
 
-        let _ = wait.await;
-    }
-
-    pub fn apply_package_update(&self, update: oneclient_core::BrowserPackageUpdate) {
-        let actions = self.clone();
-        spawn_forever(async move {
-            let Ok(state) = launcher::state() else { return };
-            let events = state.services.events.clone();
-
-            let session = oneclient_events::GroupedProgressSession::start(
-                &events,
-                format!("Updating {}", update.display_name),
-            );
-            let child = session.child(
-                update.display_name.clone(),
-                1,
-                oneclient_events::TaskCategory::Packages,
-            );
-
-            let result = oneclient_core::apply_browser_package_update(
-                &update,
-                Some(&child),
-                &state.services.content(),
-            )
-            .await;
-
-            child.finish();
-            let session_id = session.detach();
-
-            let spec = match &result {
-                Ok(_) => NotificationSpec {
-                    title: "Updated".to_string(),
-                    body: format!(
-                        "{} is now on {}",
-                        update.display_name, update.latest_version_name
-                    ),
-                    level: Level::Info,
-                    icon: Some(IconType::DownloadCloud02),
-                    progress: None,
-                    actions: Vec::new(),
-                },
-                Err(err) => NotificationSpec {
-                    title: "Update failed".to_string(),
-                    body: err.to_string(),
-                    level: Level::Error,
-                    icon: None,
-                    progress: None,
-                    actions: Vec::new(),
-                },
-            };
-
-            actions.with_engine(|app| {
-                app.notifications
-                    .finish_grouped_as_actions(&mut app.inbox, session_id, Some(spec));
-            });
-
-            // A failed update stays in the list so the user can retry
-            if result.is_ok() {
-                actions.with_engine(|app| {
-                    app.notifications
-                        .resolve_package_update(update.cluster_id, &update.hash);
-                });
-                super::invalidate_cluster_queries().await;
-            }
-        });
+        wait.await.unwrap_or_default()
     }
 
     /// The package stays marked out of date only the modal stops asking and
@@ -1747,6 +1761,8 @@ async fn launch(actions: &Actions, cluster_id: ClusterId) {
         );
         return;
     };
+
+    crate::microsoft_java::offer_for_pinned_cluster(actions, cluster_id).await;
 
     // Before the game process never after Minecraft reads its mods once at
     // startup
@@ -1989,5 +2005,89 @@ mod tests {
                 "{mode:?} must not hold a launch up over an empty list",
             );
         }
+    }
+
+    const JDK_25: &str = r"C:\jdk-25\bin\javaw.exe";
+
+    fn profile(name: &str, java_path: Option<&str>) -> GameSettingsProfile {
+        GameSettingsProfile {
+            name: name.into(),
+            java_path: java_path.map(Into::into),
+            ..GameSettingsProfile::default_global_profile()
+        }
+    }
+
+    fn cluster(id: i64, name: &str, profile_name: Option<&str>) -> Cluster {
+        Cluster {
+            id,
+            name: name.into(),
+            folder_name: name.into(),
+            setting_profile_name: profile_name.map(Into::into),
+            mc_version: "26.2".into(),
+            mc_loader: oneclient_common::domain::GameLoader::default(),
+            mc_loader_version: None,
+            stage: ClusterStage::default(),
+            created_at: None,
+            last_played: None,
+            overall_played: Duration::ZERO,
+            linked_modpack_hash: None,
+        }
+    }
+
+    #[test]
+    fn a_runtime_nobody_pinned_is_free_to_go() {
+        let profiles = vec![profile("26.2 Fabric", None)];
+        let clusters = vec![cluster(1, "26.2 Fabric", Some("26.2 Fabric"))];
+
+        assert!(clusters_pinned_to_java(&profiles, &clusters, JDK_25).is_empty());
+    }
+
+    #[test]
+    fn a_pinned_runtime_is_reported_under_its_cluster_name() {
+        let profiles = vec![profile("26.2 Fabric", Some(JDK_25))];
+        let clusters = vec![cluster(1, "26.2 Fabric", Some("26.2 Fabric"))];
+
+        assert_eq!(
+            clusters_pinned_to_java(&profiles, &clusters, JDK_25),
+            vec!["26.2 Fabric".to_string()],
+        );
+    }
+
+    #[test]
+    fn only_the_runtime_being_removed_counts() {
+        let profiles = vec![
+            profile("21 pinned", Some(r"C:\jdk-21\bin\javaw.exe")),
+            profile("25 pinned", Some(JDK_25)),
+        ];
+        let clusters = vec![
+            cluster(1, "Old pack", Some("21 pinned")),
+            cluster(2, "New pack", Some("25 pinned")),
+        ];
+
+        assert_eq!(
+            clusters_pinned_to_java(&profiles, &clusters, JDK_25),
+            vec!["New pack".to_string()],
+        );
+    }
+
+    #[test]
+    fn every_cluster_holding_the_runtime_is_named() {
+        let profiles = vec![profile("a", Some(JDK_25)), profile("b", Some(JDK_25))];
+        let clusters = vec![cluster(1, "Alpha", Some("a")), cluster(2, "Beta", Some("b"))];
+
+        assert_eq!(
+            clusters_pinned_to_java(&profiles, &clusters, JDK_25),
+            vec!["Alpha".to_string(), "Beta".to_string()],
+        );
+    }
+
+    #[test]
+    fn a_profile_no_cluster_claims_falls_back_to_its_own_name() {
+        let profiles = vec![profile("orphaned", Some(JDK_25))];
+
+        assert_eq!(
+            clusters_pinned_to_java(&profiles, &[], JDK_25),
+            vec!["orphaned".to_string()],
+        );
     }
 }

@@ -38,10 +38,28 @@ impl Component for SettingsAccounts {
         let remove = use_remove_account();
         let refresh = use_refresh_account();
 
-        let username = use_state(String::new);
+        let mut username = use_state(String::new);
         let mut show_offline = use_state(|| false);
+        let mut closing_offline = use_state(|| false);
         let edit_account = use_state(|| None::<(Uuid, String)>);
         let edit_name = use_state(String::new);
+
+        use_side_effect(move || {
+            if !*closing_offline.read() {
+                return;
+            }
+            match &*add_offline.read().state() {
+                MutationStateData::Settled { res: Ok(_), .. } => {
+                    closing_offline.set(false);
+                    show_offline.set(false);
+                    username.set(String::new());
+                }
+                MutationStateData::Settled { res: Err(_), .. } => {
+                    closing_offline.set(false);
+                }
+                _ => {}
+            }
+        });
 
         let accounts = try_accounts(&accounts_query).unwrap_or_default();
         let default_account = try_default_account(&default_query);
@@ -59,20 +77,8 @@ impl Component for SettingsAccounts {
             if name.is_empty() {
                 return;
             }
-            let mut show_offline = show_offline;
-            let mut username = username;
-            spawn(async move {
-                let reader = add_offline
-                    .mutate_async(AddOfflineAccountKeys { username: name })
-                    .await;
-                if matches!(
-                    &*reader.state(),
-                    MutationStateData::Settled { res: Ok(_), .. }
-                ) {
-                    show_offline.set(false);
-                    username.set(String::new());
-                }
-            });
+            add_offline.mutate(AddOfflineAccountKeys { username: name });
+            closing_offline.set(true);
         };
 
         let mut rows: Vec<Element> = accounts
@@ -410,7 +416,7 @@ fn offline_dialog(
                                 .child(field_label("UUID"))
                                 .child(
                                     label()
-                                        .text(uuid_preview.unwrap_or_else(|| "—".to_string()))
+                                        .text(uuid_preview.unwrap_or_else(|| "-".to_string()))
                                         .font_size(12.)
                                         .color(colors::fg_secondary()),
                                 ),
@@ -606,6 +612,7 @@ impl Component for AccountRow {
                 Button::new()
                     .ghost()
                     .icon()
+                    .tooltip("Refresh this account")
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         if *refreshing.peek() {
@@ -634,6 +641,7 @@ impl Component for AccountRow {
                 Button::new()
                     .ghost()
                     .icon()
+                    .tooltip("Change Skin")
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         let _ = freya::router::RouterContext::get().push(crate::Route::AccountSkins {});
@@ -654,6 +662,7 @@ impl Component for AccountRow {
                     .ghost()
                     .icon()
                     .enabled(is_offline)
+                    .tooltip("Edit username")
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         edit_name_state.set(username_val.clone());
@@ -673,6 +682,7 @@ impl Component for AccountRow {
                 Button::new()
                     .ghost()
                     .icon()
+                    .tooltip("Remove account")
                     .on_press(move |e: Event<PressEventData>| {
                         e.stop_propagation();
                         remove.mutate(RemoveAccountKeys { id });

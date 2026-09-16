@@ -8,20 +8,25 @@ use crate::{
     Route,
     components::{Avatar, Icon, IconType},
     hooks::{
-        settled_or_loading, try_default_account, use_active_cluster_id, use_clusters,
-        use_current_account, use_dispatch, use_notifications_snapshot,
+        settled_or_loading, try_default_account, use_active_cluster_id, use_browser_type,
+        use_clusters, use_current_account, use_dispatch, use_notifications_snapshot,
     },
     theme,
     utils::sort_clusters_for_home,
 };
 
 const NAVBAR_INTRO_MS: u64 = 460;
+const LOGO_HIDE_NAVBAR_W: f32 = 1100.;
+const NAVBAR_SIDE_PADDING_PX: f32 = 40.;
+const NAV_LINK_SPACING_PX: f32 = 36.;
+const COMPACT_LOGO_PX: f32 = 28.;
 
 #[derive(PartialEq)]
 pub struct Navbar;
 
 impl Component for Navbar {
     fn render(&self) -> impl IntoElement {
+        let mut navbar_width = use_state(|| 0f32);
         let intro = use_animation(|conf| {
             conf.on_creation(OnCreation::Run);
             AnimNum::new(0., 1.)
@@ -31,6 +36,9 @@ impl Component for Navbar {
         });
         let eased = intro.get().value();
         let slide = (1.0 - eased) * -theme::NAVBAR_HEIGHT_PX;
+
+        let measured = *navbar_width.read();
+        let show_logo = measured <= 0. || measured > LOGO_HIDE_NAVBAR_W;
 
         rect()
             .width(Size::fill())
@@ -44,11 +52,17 @@ impl Component for Navbar {
                     .horizontal()
                     .content(Content::Flex)
                     .cross_align(Alignment::Center)
-                    .padding(Gaps::new_symmetric(0.0, 40.0))
+                    .padding(Gaps::new_symmetric(0.0, NAVBAR_SIDE_PADDING_PX))
                     .offset_y(slide)
                     .opacity(eased)
-                    .child(navbar_left())
-                    .child(navbar_center())
+                    .on_sized(move |event: Event<SizedEventData>| {
+                        let next = event.data().area.width();
+                        if (*navbar_width.peek() - next).abs() > 0.5 {
+                            navbar_width.set(next);
+                        }
+                    })
+                    .child(navbar_left(show_logo))
+                    .child(navbar_center(!show_logo))
                     .child(NavbarRight),
             )
             .child(
@@ -61,34 +75,60 @@ impl Component for Navbar {
     }
 }
 
-fn navbar_left() -> impl IntoElement {
+fn navbar_left(show_logo: bool) -> impl IntoElement {
     rect()
         .horizontal()
-        .width(Size::flex(1.0))
+        .width(if show_logo {
+            Size::flex(1.0)
+        } else {
+            Size::auto()
+        })
         .cross_align(Alignment::Center)
-        .child(navbar_logo())
+        .maybe(!show_logo, |el| {
+            el.padding(Gaps::new(0., NAV_LINK_SPACING_PX, 0., 0.))
+        })
+        .child(if show_logo {
+            NavbarLogo.into_element()
+        } else {
+            Icon::new(IconType::IconLogo)
+                .size(COMPACT_LOGO_PX)
+                .into_element()
+        })
 }
 
-fn navbar_logo() -> impl IntoElement {
-    let bytes = use_memo(|| crate::AppAssets::get_bytes("logo.svg").unwrap_or_default());
+#[derive(PartialEq)]
+struct NavbarLogo;
 
-    SvgViewer::new(("logo.svg", bytes.read().cloned()))
-        .show_loader(false)
-        .height(Size::px(44.))
-        .width(Size::px(214.))
-        .color(theme::colors::fg_primary())
+impl Component for NavbarLogo {
+    fn render(&self) -> impl IntoElement {
+        let bytes = use_memo(|| crate::AppAssets::get_bytes("logo.svg").unwrap_or_default());
+
+        SvgViewer::new(("logo.svg", bytes.read().cloned()))
+            .show_loader(false)
+            .height(Size::px(44.))
+            .width(Size::px(214.))
+            .color(theme::colors::fg_primary())
+    }
 }
 
-fn navbar_center() -> impl IntoElement {
+fn navbar_center(is_small: bool) -> impl IntoElement {
     let route = use_route::<Route>();
     let browse_target = browse_target();
 
     rect()
         .horizontal()
         .width(Size::flex(1.0))
-        .main_align(Alignment::Center)
+        .main_align(if is_small {
+            Alignment::Start
+        } else {
+            Alignment::Center
+        })
         .cross_align(Alignment::Center)
-        .spacing(36.)
+        .spacing(if is_small {
+                NAV_LINK_SPACING_PX
+            } else {
+                NAV_LINK_SPACING_PX / 2.
+            })
         .child(NavLink {
             active: route == Route::Home {},
             target: NavTarget::Route(Route::Home {}),
@@ -115,17 +155,13 @@ fn navbar_center() -> impl IntoElement {
             target: NavTarget::Route(browse_target),
             nav_label: "Browse",
         })
-        .child(NavLink {
-            active: route == Route::Stats {},
-            target: NavTarget::Route(Route::Stats {}),
-            nav_label: "Stats",
-        })
 }
 
 /// Falls back active cluster then most recently played then Versions when none exist
 fn browse_target() -> Route {
     let clusters = settled_or_loading(&use_clusters()).unwrap_or_default();
     let active = *use_active_cluster_id().read();
+    let package_type = use_browser_type().read().clone();
 
     let cluster_id = active
         .filter(|id| clusters.iter().any(|cluster| cluster.id == *id))
@@ -134,7 +170,7 @@ fn browse_target() -> Route {
     match cluster_id {
         Some(cluster_id) => Route::Browser {
             cluster_id,
-            package_type: "mod".to_string(),
+            package_type,
             pick_cluster: true,
         },
         None => Route::Clusters {},
@@ -253,6 +289,10 @@ impl Component for NavbarRight {
             let _ = RouterContext::get().push(Route::SettingsLauncher {});
         };
 
+        let open_stats = |_| {
+            let _ = RouterContext::get().push(Route::Stats {});
+        };
+
         rect()
             .horizontal()
             .width(Size::flex(1.0))
@@ -261,17 +301,26 @@ impl Component for NavbarRight {
             .spacing(8.)
             .child(
                 super::navbar_button()
+                    .tooltip("Stats")
+                    .child(Icon::new(IconType::LineChartUp01).size(20.))
+                    .on_press(open_stats),
+            )
+            .child(
+                super::navbar_button()
+                    .tooltip("Notifications")
                     .child(notification_bell(unread))
                     .on_press(open_notifications),
             )
             .child(
                 super::navbar_button()
+                    .tooltip("Settings")
                     .child(Icon::new(IconType::Settings02).size(20.))
                     .on_press(open_settings),
             )
             .child(
                 super::navbar_button()
                     .padding(0.0)
+                    .tooltip("Switch account")
                     .on_press(open_account_switcher)
                     .child(
                         Avatar::new(account_uuid)

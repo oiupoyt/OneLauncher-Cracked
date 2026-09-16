@@ -38,13 +38,11 @@ impl QueryCapability for FetchPlayerProfileQuery {
         }
 
         let access_token = keys.access_token.clone();
+
         let state = crate::launcher::state()?;
         let client = &state.services.requester;
 
-        Ok(
-            minecraft::fetch_player_profile_view(client, &keys.uuid, access_token.as_deref())
-                .await?,
-        )
+        Ok(minecraft::fetch_player_profile_view(client, &keys.uuid, access_token.as_deref()).await?)
     }
 
     // TODO Cache

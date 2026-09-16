@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
 
 use oneclient_common::domain::ProviderId;
@@ -18,8 +19,8 @@ use oneclient_events::GroupedProgressChild;
 
 use crate::ctx::ContentCtx;
 use crate::error::{ContentError, ContentResult};
-use crate::packages::dependencies::pick_version;
-use crate::packages::store::{PackageStore, evict_if_unused, try_unlink_materialized};
+use crate::packages::dependencies::{pick_version, resolve_required, resolves_dependencies};
+use crate::packages::store::PackageStore;
 use crate::packages::types::LinkedArtifactInfo;
 
 /// Matches the bundle installer's fan-out
@@ -83,16 +84,24 @@ struct Candidate {
 	version_id: String,
 	display_name: String,
 	display_version: String,
+	published_at: Option<DateTime<Utc>>,
 }
 
 /// A missing bundle tracking row is the marker for "the user added this themselves"
 fn browser_installed(
 	linked: &[LinkedArtifactInfo],
 	bundle_hashes: &HashSet<String>,
+	bundle_projects: &HashSet<String>,
 ) -> Vec<Candidate> {
 	linked
 		.iter()
+		.filter(|info| info.enabled)
 		.filter(|info| !bundle_hashes.contains(&info.hash))
+		.filter(|info| {
+			info.project_id
+				.as_ref()
+				.is_none_or(|id| !bundle_projects.contains(id))
+		})
 		.filter_map(|info| {
 			let provider = info.provider?;
 			if provider == ProviderId::Local {
@@ -108,6 +117,7 @@ fn browser_installed(
 					.clone()
 					.unwrap_or_else(|| info.file_name.clone()),
 				display_version: info.display_version.clone().unwrap_or_default(),
+				published_at: info.published_at.as_deref().and_then(parse_published),
 			})
 		})
 		.collect()
@@ -123,13 +133,12 @@ pub async fn check_browser_package_updates(
 	let cluster = PackageStore::get_cluster(cluster_id, ctx).await?;
 	let linked = PackageStore::list_linked_artifacts(cluster_id, ctx).await?;
 
-	let bundle_hashes: HashSet<String> = bundle_dao::list_bundle_tracked(&ctx.db, cluster_id)
-		.await?
-		.into_iter()
-		.map(|row| row.hash)
-		.collect();
+	let tracked = bundle_dao::list_bundle_tracked(&ctx.db, cluster_id).await?;
+	let bundle_projects: HashSet<String> =
+		tracked.iter().filter_map(|row| row.package_id.clone()).collect();
+	let bundle_hashes: HashSet<String> = tracked.into_iter().map(|row| row.hash).collect();
 
-	let candidates = browser_installed(&linked, &bundle_hashes);
+	let candidates = browser_installed(&linked, &bundle_hashes, &bundle_projects);
 	if candidates.is_empty() {
 		return Ok(BrowserUpdateCheck {
 			cluster_id,
@@ -201,7 +210,16 @@ pub async fn check_browser_package_updates(
 	Ok(check)
 }
 
-/// `None` when the installed version is already the newest compatible one
+fn parse_published(raw: &str) -> Option<DateTime<Utc>> {
+	DateTime::parse_from_rfc3339(raw)
+		.ok()
+		.map(|at| at.with_timezone(&Utc))
+}
+
+fn is_upgrade(installed_published: Option<DateTime<Utc>>, latest_published: DateTime<Utc>) -> bool {
+	installed_published.is_none_or(|installed| latest_published > installed)
+}
+
 async fn latest_for(
 	candidate: &Candidate,
 	cluster: &ClusterRow,
@@ -213,6 +231,16 @@ async fn latest_for(
 	};
 
 	if latest.version_id == candidate.version_id {
+		return Ok(None);
+	}
+
+	if !is_upgrade(candidate.published_at, latest.published) {
+		tracing::debug!(
+			project_id = %candidate.project_id,
+			installed = %candidate.version_id,
+			offered = %latest.version_id,
+			"update not offered, the installed version is not older than the pick"
+		);
 		return Ok(None);
 	}
 
@@ -317,6 +345,12 @@ pub async fn apply_browser_package_update(
 		.get_version(&update.project_id, &update.latest_version_id, ctx)
 		.await?;
 
+	let enabled_before = artifact_dao::get_cluster_artifact(&ctx.db, update.cluster_id, &update.hash)
+		.await?
+		.map(|link| link.enabled != 0);
+
+	install_new_dependencies(update, &project, &version, ctx).await;
+
 	// Compatibility is not re-checked
 	// a provider disagreeing at install time would strand the user on a build
 	// they cannot move off
@@ -328,21 +362,6 @@ pub async fn apply_browser_package_update(
 		true,
 		false,
 		child,
-		ctx,
-	)
-	.await?;
-
-	let enabled_before = artifact_dao::get_cluster_artifact(&ctx.db, update.cluster_id, &update.hash)
-		.await?
-		.map(|link| link.enabled != 0);
-
-	// Everything else of this project goes not just the recorded hash which can
-	// be stale if the user installed a version by hand since the check ran
-	unlink_other_versions(
-		update.cluster_id,
-		update.provider,
-		&update.project_id,
-		&installed.hash,
 		ctx,
 	)
 	.await?;
@@ -373,79 +392,75 @@ pub async fn apply_browser_package_update(
 	Ok(installed.hash)
 }
 
-/// Bundle-owned copies are stepped over
-/// unlinking one here would have the next bundle sync put it straight back
-#[tracing::instrument(level = "debug", skip(ctx))]
-async fn unlink_other_versions(
-	cluster_id: i64,
-	provider: ProviderId,
-	project_id: &str,
-	keep_hash: &str,
+#[tracing::instrument(level = "debug", skip(update, project, version, ctx), fields(cluster_id = update.cluster_id))]
+async fn install_new_dependencies(
+	update: &BrowserPackageUpdate,
+	project: &crate::packages::types::ProjectDetail,
+	version: &crate::packages::types::VersionDetail,
 	ctx: &ContentCtx,
-) -> ContentResult<()> {
-	let others = artifact_dao::list_cluster_artifacts_for_project(
-		&ctx.db,
-		cluster_id,
-		provider as i64,
-		project_id,
-		keep_hash,
-	)
-	.await?;
+) {
+	if !resolves_dependencies(project.content_type) {
+		return;
+	}
 
-	for link in others {
-		if bundle_dao::get_bundle_tracked(&ctx.db, cluster_id, &link.hash)
-			.await?
-			.is_some()
-		{
-			tracing::debug!(
-				hash = %link.hash,
-				"leaving a bundle-owned version of the project in place"
-			);
-			continue;
+	let resolution = match resolve_required(update.provider, version, update.cluster_id, ctx).await {
+		Ok(resolution) => resolution,
+		Err(err) => {
+			tracing::warn!(%err, "dependency resolution failed, updating the package alone");
+			return;
 		}
+	};
 
-		tracing::info!(
-			cluster_id,
-			project_id,
-			hash = %link.hash,
-			"dropping a superseded version of the project"
-		);
-		unlink_superseded(cluster_id, &link.hash, ctx).await?;
+	for missing in &resolution.unresolved {
+		tracing::warn!(dependency = %missing, "no compatible version for a new dependency");
 	}
 
-	Ok(())
-}
-
-/// Not `bundles::remove_artifact_from_cluster`
-/// `packages` must not depend on `bundles` and its override reconciliation
-/// does not apply here
-#[tracing::instrument(level = "debug", skip(ctx))]
-async fn unlink_superseded(cluster_id: i64, hash: &str, ctx: &ContentCtx) -> ContentResult<()> {
-	let cluster = PackageStore::get_cluster(cluster_id, ctx).await?;
-	let content_type = artifact_dao::get_artifact_by_hash(&ctx.db, hash)
-		.await?
-		.and_then(|artifact| {
-			oneclient_common::domain::ContentType::from_repr(artifact.content_type as u8)
-		});
-	let link = artifact_dao::get_cluster_artifact(&ctx.db, cluster_id, hash).await?;
-
-	artifact_dao::unlink_cluster_artifact(&ctx.db, cluster_id, hash).await?;
-
-	if let (Some(content_type), Some(link)) = (content_type, link) {
-		try_unlink_materialized(&cluster, content_type, &link.cluster_file_name).await;
+	for dependency in &resolution.install {
+		match PackageStore::install_to_cluster(
+			update.provider,
+			&dependency.project,
+			&dependency.version,
+			update.cluster_id,
+			true,
+			false,
+			None,
+			ctx,
+		)
+		.await
+		{
+			Ok((artifact, _)) => {
+				tracing::info!(
+					dependency = %dependency.project.name,
+					"installed a dependency the newer version needs"
+				);
+				if let Err(err) = artifact_dao::set_seen_status(
+					&ctx.db,
+					update.cluster_id,
+					&artifact.hash,
+					SeenStatus::New,
+				)
+				.await
+				{
+					tracing::debug!(%err, "could not mark a new dependency as new");
+				}
+			}
+			Err(err) => tracing::warn!(
+				dependency = %dependency.project.name,
+				%err,
+				"failed to install a dependency the newer version needs"
+			),
+		}
 	}
-
-	if let Err(err) = evict_if_unused(hash, ctx).await {
-		tracing::warn!(hash, error = %err, "failed to evict the superseded artifact");
-	}
-
-	Ok(())
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use oneclient_common::domain::ContentType;
+
+	fn at(raw: &str) -> DateTime<Utc> {
+		parse_published(raw).expect("test dates are rfc 3339")
+	}
 
 	fn linked(
 		hash: &str,
@@ -480,7 +495,7 @@ mod tests {
 		let bundles: HashSet<String> = ["a".to_string()].into_iter().collect();
 
 		assert!(
-			browser_installed(&linked, &bundles).is_empty(),
+			browser_installed(&linked, &bundles, &HashSet::new()).is_empty(),
 			"a bundle-tracked artifact must stay out of the browser update flow"
 		);
 	}
@@ -494,7 +509,7 @@ mod tests {
 			Some("v1"),
 		)];
 
-		let found = browser_installed(&linked, &HashSet::new());
+		let found = browser_installed(&linked, &HashSet::new(), &HashSet::new());
 		assert_eq!(found.len(), 1);
 		assert_eq!(found[0].project_id, "sodium");
 		assert_eq!(found[0].version_id, "v1");
@@ -508,7 +523,7 @@ mod tests {
 		];
 
 		assert!(
-			browser_installed(&linked, &HashSet::new()).is_empty(),
+			browser_installed(&linked, &HashSet::new(), &HashSet::new()).is_empty(),
 			"a file with no provider release has no version to compare"
 		);
 	}
@@ -518,7 +533,7 @@ mod tests {
 		let linked = vec![linked("a", Some(ProviderId::Modrinth), Some("sodium"), None)];
 
 		assert!(
-			browser_installed(&linked, &HashSet::new()).is_empty(),
+			browser_installed(&linked, &HashSet::new(), &HashSet::new()).is_empty(),
 			"without an installed version id there is nothing to compare against"
 		);
 	}
@@ -547,5 +562,54 @@ mod tests {
 		let pending = check.pending();
 		assert_eq!(pending.len(), 1);
 		assert_eq!(pending[0].hash, "b");
+	}
+
+	#[test]
+	fn a_newer_pick_is_an_upgrade() {
+		assert!(is_upgrade(
+			Some(at("2026-01-01T00:00:00Z")),
+			at("2026-02-01T00:00:00Z")
+		));
+	}
+
+	#[test]
+	fn a_pick_older_than_the_installed_build_is_not_an_upgrade() {
+		assert!(
+			!is_upgrade(
+				Some(at("2026-02-01T00:00:00Z")),
+				at("2026-01-01T00:00:00Z")
+			),
+			"a hand-installed build newer than the provider pick must not be offered a downgrade"
+		);
+	}
+
+	#[test]
+	fn a_pick_published_at_the_same_moment_is_not_an_upgrade() {
+		assert!(!is_upgrade(
+			Some(at("2026-02-01T00:00:00Z")),
+			at("2026-02-01T00:00:00Z")
+		));
+	}
+
+	#[test]
+	fn an_unknown_installed_date_still_offers_the_update() {
+		assert!(is_upgrade(None, at("2026-02-01T00:00:00Z")));
+	}
+
+	#[test]
+	fn candidates_carry_the_installed_publish_date() {
+		let mut info = linked("a", Some(ProviderId::Modrinth), Some("sodium"), Some("v1"));
+		info.published_at = Some("2026-02-01T00:00:00Z".into());
+
+		let found = browser_installed(&[info], &HashSet::new(), &HashSet::new());
+		assert_eq!(found[0].published_at, Some(at("2026-02-01T00:00:00Z")));
+	}
+	#[test]
+	fn an_unparseable_publish_date_leaves_the_candidate_undated() {
+		let mut info = linked("a", Some(ProviderId::Modrinth), Some("sodium"), Some("v1"));
+		info.published_at = Some("not a date".into());
+
+		let found = browser_installed(&[info], &HashSet::new(), &HashSet::new());
+		assert_eq!(found[0].published_at, None);
 	}
 }
