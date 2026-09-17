@@ -138,7 +138,7 @@ jobs:
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v2.3.1-c2" >> $GITHUB_OUTPUT
+            echo "tag=v2.4.2-c1" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean up previous release if exists
@@ -155,11 +155,12 @@ jobs:
           name: "OneLauncher-Cracked ${{ steps.release_tag.outputs.tag }}"
           body: |
             ### What's New in ${{ steps.release_tag.outputs.tag }}
-            - **Fixed Offline Game Launch**: Removed upstream's check that blocked offline accounts from launching the game unless at least one Microsoft account was signed in. Offline accounts can now launch directly with 0 Microsoft accounts required.
-            - **Rebased onto Official Upstream 2.3.1**: Integrated all upstream OneLauncher 2.3.1 updates, fixes, and performance improvements.
-            - **Offline / Cracked Accounts**: Full offline account support with customizable username and avatar caching.
-            - **Custom Offline Skins & targeted multiplayer injection**: Custom 3D skin changer, per-account UUID hash targeting preventing multiplayer skin cloning, and automatic CustomSkinLoader config generation.
-            - **Integrated Auto-Updater**: Native background check and direct GitHub Releases binary downloads.
+            - **Rebased onto Official Upstream 2.4.2**: Includes all upstream 2.4.0, 2.4.1, and 2.4.2 updates (Linux discrete GPU offloading, shared/cluster mod symlinks, Microsoft Java provider, UI tooltips, analytics graphs, Ornithe loader, bundle fixes).
+            - **Guaranteed Offline Game Launch**: Completely eliminated the upstream check in `account_for_launch` that blocked offline accounts from launching without Microsoft accounts. Offline accounts can launch directly with 0 Microsoft accounts required.
+            - **Custom Offline Skins & Targeted Multiplayer Injection**: In-launcher 3D skin changer, per-account Java UUID hash targeting preventing multiplayer skin cloning, and automatic CustomSkinLoader config generation.
+            - **Offline / Cracked Accounts**: Full offline account support in onboarding and settings with inline username editing.
+            - **Integrated Auto-Updater**: Native background update checks and direct GitHub Releases binary downloads.
+            - **UI Bug Fixes**: Fixed filter popover blur/text ghosting in the package manager.
           draft: false
           prerelease: false
           generate_release_notes: false
