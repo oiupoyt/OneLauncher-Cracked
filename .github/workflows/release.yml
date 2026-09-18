@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release Tag (e.g. v2.5.0)'
+        description: 'Release Tag (e.g. v2.5.1)'
         required: false
-        default: 'v2.5.0-c1'
+        default: 'v2.5.1-c1'
         type: string
 
 permissions:
@@ -138,7 +138,7 @@ jobs:
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v2.5.0-c1" >> $GITHUB_OUTPUT
+            echo "tag=v2.5.1-c1" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean up previous release if exists
@@ -155,7 +155,7 @@ jobs:
           name: "OneLauncher-Cracked ${{ steps.release_tag.outputs.tag }}"
           body: |
             ### What's New in ${{ steps.release_tag.outputs.tag }}
-            - **Rebased onto Official Upstream 2.5.0**: Includes all upstream 2.5.0 updates (New Control Center quick settings & system info, refined navbar styling, bundle version-tag matching and compatibility filtering, version metadata self-healing).
+            - **Rebased onto Official Upstream 2.5.1**: Includes all upstream 2.5.1 updates (Process hook error handling and execution reporting, optimized bundled packages sync after launch, auto-refresh of stale package metadata, asset optimizations).
             - **Guaranteed Offline Game Launch**: Completely eliminated the upstream check in `account_for_launch` that blocked offline accounts from launching without Microsoft accounts. Offline accounts can launch directly with 0 Microsoft accounts required.
             - **Custom Offline Skins & Targeted Multiplayer Injection**: In-launcher 3D skin changer, slim/classic model toggle, per-account Java UUID hash targeting preventing multiplayer skin cloning, and automatic CustomSkinLoader config generation.
             - **Offline / Cracked Accounts**: Full offline account support in onboarding and settings with inline username editing.
