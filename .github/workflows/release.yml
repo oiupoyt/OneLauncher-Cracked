@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release Tag (e.g. v2.5.1)'
         required: false
-        default: 'v2.5.1-c1'
+        default: 'v2.5.1-c2'
         type: string
 
 permissions:
@@ -138,7 +138,7 @@ jobs:
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
           else
-            echo "tag=v2.5.1-c1" >> $GITHUB_OUTPUT
+            echo "tag=v2.5.1-c2" >> $GITHUB_OUTPUT
           fi
 
       - name: Clean up previous release if exists
@@ -155,12 +155,12 @@ jobs:
           name: "OneLauncher-Cracked ${{ steps.release_tag.outputs.tag }}"
           body: |
             ### What's New in ${{ steps.release_tag.outputs.tag }}
-            - **Rebased onto Official Upstream 2.5.1**: Includes all upstream 2.5.1 updates (Process hook error handling and execution reporting, optimized bundled packages sync after launch, auto-refresh of stale package metadata, asset optimizations).
-            - **Guaranteed Offline Game Launch**: Completely eliminated the upstream check in `account_for_launch` that blocked offline accounts from launching without Microsoft accounts. Offline accounts can launch directly with 0 Microsoft accounts required.
-            - **Custom Offline Skins & Targeted Multiplayer Injection**: In-launcher 3D skin changer, slim/classic model toggle, per-account Java UUID hash targeting preventing multiplayer skin cloning, and automatic CustomSkinLoader config generation.
-            - **Offline / Cracked Accounts**: Full offline account support in onboarding and settings with inline username editing.
-            - **Integrated Auto-Updater**: Native background update checks and direct GitHub Releases binary downloads.
-            - **UI Bug Fixes**: Fixed filter popover blur/text ghosting in the package manager.
+            - **Proper Isolated Offline Skin System (Authlib-Injector)**: Replaced legacy jar/pack character replacement with an embedded, zero-network-dependency Authlib-Injector session provider. Your skin is attached strictly and exclusively to your player profile, completely eliminating the bug where other players or NPCs on offline servers would receive your skin.
+            - **Vanilla & Multi-server Integrity**: Other offline players remain authentic vanilla Steve/Alex, while online players on hybrid servers display their legitimate Mojang skins via transparent caching session proxying.
+            - **Automatic Legacy Cleanup**: Restores pristine `client.jar` and removes stale skin resource packs from `options.txt` on launch.
+            - **Guaranteed Offline Game Launch**: Direct offline launching with 0 Microsoft accounts required.
+            - **In-Launcher 3D Skin Changer**: Full 3D skin preview, slim/classic arm model toggle, local file import, and online skin downloads.
+            - **Rebased on Upstream 2.5.1**: All upstream 2.5.1 features, hook error reporting, and metadata self-healing.
           draft: false
           prerelease: false
           generate_release_notes: false

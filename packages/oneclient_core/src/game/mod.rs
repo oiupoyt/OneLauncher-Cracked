@@ -10,6 +10,7 @@ mod reattach;
 mod session;
 mod shared_dir;
 mod tail;
+pub mod skin_server;
 
 pub use analytics::{
     Analytics, DayPlaytime, Persona, PlaytimeStats, ServerStat, WEEKDAY_LABELS, aggregate_servers,
