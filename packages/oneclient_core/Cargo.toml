@@ -92,6 +92,7 @@ sysinfo.workspace = true
 trash.workspace = true
 url.workspace = true
 uuid.workspace = true
+rsa = { version = "0.9", features = ["sha1", "pem"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

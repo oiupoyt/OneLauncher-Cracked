@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use rsa::pkcs8::DecodePrivateKey;
+use rsa::{Pkcs1v15Sign, RsaPrivateKey};
+
 type MojangCacheEntry = (Option<String>, Instant);
 type MojangCacheMap = HashMap<String, MojangCacheEntry>;
 
@@ -19,6 +22,26 @@ static AUTHLIB_INJECTOR_BYTES: &[u8] = include_bytes!("../../assets/authlib-inje
 static SKIN_SERVER_PORT: OnceLock<u16> = OnceLock::new();
 static REGISTERED_ACCOUNTS: OnceLock<RwLock<HashMap<String, AccountRegistration>>> = OnceLock::new();
 static MOJANG_CACHE: OnceLock<RwLock<MojangCacheMap>> = OnceLock::new();
+
+pub static SKIN_SERVER_PUBLIC_KEY: &str = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2ZEWcf6IB84Atm2pnE/N\na19ipdSUpXjMYWaloNhP5ygsMB63i1T55RxaMeVoX/CLY1cFI14+BqgeHGYHOLyo\nVoLz1ylC1QvI99Q1fyl0caTD41K11T5l+EGs5gpepGbQ11tRhtTFNpZg016W83t9\nQMMqpVzSETfK65bu5jOeipvf9TAlXNCpRPZBXe12+kJ5H1t3H9NT2KMUpcYPER7p\nIeIMOgiUwCCBqlXVhoKqjTvplKmyaY/qP3zBdLDQ/+mA1i9SOM8529vi452g+ftP\nkUK+AP52KBb4MnmrwasnH9JdzmS8t2Kl17HYORZ6RpHAPlF4DEC7QDEhvJRLvf1N\nbQIDAQAB\n-----END PUBLIC KEY-----";
+
+static SKIN_SERVER_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDZkRZx/ogHzgC2\nbamcT81rX2Kl1JSleMxhZqWg2E/nKCwwHreLVPnlHFox5Whf8ItjVwUjXj4GqB4c\nZgc4vKhWgvPXKULVC8j31DV/KXRxpMPjUrXVPmX4QazmCl6kZtDXW1GG1MU2lmDT\nXpbze31AwyqlXNIRN8rrlu7mM56Km9/1MCVc0KlE9kFd7Xb6QnkfW3cf01PYoxSl\nxg8RHukh4gw6CJTAIIGqVdWGgqqNO+mUqbJpj+o/fMF0sND/6YDWL1I4zznb2+Lj\nnaD5+0+RQr4A/nYoFvgyeavBqycf0l3OZLy3YqXXsdg5FnpGkcA+UXgMQLtAMSG8\nlEu9/U1tAgMBAAECggEACCDgDk08ptH++9HYCuN+YLsVE+3/ybjcJe1wVbSPM6sw\nD3IuWFHJ7lHjWsbf4em6Q3FeW0ZrmdMRIO186pU90tGcq5a6jPweO4gdoY0acR5/\nRRBzg66Ln71QaN3NUGYY+lrKjneHkLUIlA0OJbWg5dkE0F3J6WPEvI2MimQ2UaZU\nkqrGKT7QiAhJSlBSAi4dcDXQbSyFRbCm1hw3goL+hpOfFUVymR0TLFqAl8p0uaei\nnGOt4A3g84xx7zHQx4iUVzanX7mGnKDfEHPB1wohvKkn37vGIocAT43kt/AxJS8p\nzMgy1UyyzIwc6vjuDOqLKqTl6dqNvftzucBHTp8NHwKBgQDtUlYCNsyptDwLXHC7\nmIQd4OJIihZxoOwbPx2gzahpaymyeu3/2w6hA2BlqS1/PFpkhe1igOsYkqUWMyNs\nwA9ob4df9CQhPe787q12YL6LahY73A/Qfgn5+6dW8l9pYPyBgwmUd/NMdkQjZILH\nHTxB8eX1F2IsxAKoQ0g8unQ2OwKBgQDqsLiysueH3gL/u19RksQy9PIVi6dnSuiH\nq93zIKVjKcQmAOrQboo9w8wXbwX3z8WGGbxWNbnIEFYTiKzQD2fviserV1d4Xz9E\nOwIDuc8PdBWbgpjSfIDbBqc6AmE34JLyn1AdX9fkhBjquAy370v4ZdHdG5wnpxSg\nw8qQCy7IdwKBgCA5lOo6DLJigeC9DaW7gP0Zo0BcV83YHxdYC6rhIiQmZAQTQywB\nz8u3TKihP0dOp6uMr/43KTUt/HK2QPIsZis1MbmqyhklcsUvl6hCXL1Li3dXW2Jh\nKvOh40ggIyqI++COLYfWfdf9GyV/KW7mHl+J/EK6iR8xAndco3tzigIvAoGAXBRE\nExCwWJVZld59EnND+T4zcRKe9p7kRr6+0TJA0XxEkiiP+IE2Se91Nsh/je/97pRQ\nWX6wynbmXrmkG+m/fLN1jZsyHW85UlrYen+/Zq/D/oSp0wO4RrcAi3j9jb/Vx82L\n0EqXWPgfEpBtpQkFRIsmYNsBVGlwZXcMFaHdlBcCgYAsBi2KNp3/88XdWxODFpEu\nZ5YjqmhGEAInCYTQOquYHFBjVTrV04I2Zr031Z6iETopm/9nLZ15VMjbZyoZWS3B\nAteqz/MfyDOUN3U4xrBr6nxD/HcpNoWeLXyzGnRya8K+/1vz0hWP/e5Q/5KvCGAo\npmSM49/FvJ7y20c1x1fq1A==\n-----END PRIVATE KEY-----";
+
+static SIGNING_KEY: OnceLock<RsaPrivateKey> = OnceLock::new();
+
+pub fn sign_sha1_with_rsa(data: &[u8]) -> Option<String> {
+    use sha1::Digest;
+    let key = SIGNING_KEY.get_or_init(|| {
+        RsaPrivateKey::from_pkcs8_pem(SKIN_SERVER_PRIVATE_KEY_PEM)
+            .expect("valid embedded private key")
+    });
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    let signing_scheme = Pkcs1v15Sign::new::<sha1::Sha1>();
+    let sig_bytes = key.sign(signing_scheme, &digest).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(sig_bytes))
+}
 
 #[derive(Clone, Debug)]
 pub struct AccountRegistration {
@@ -130,7 +153,7 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
     let method = parts.next().unwrap_or("");
     let uri = parts.next().unwrap_or("");
 
-    if method != "GET" && method != "HEAD" {
+    if method != "GET" && method != "HEAD" && method != "POST" {
         let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         stream.write_all(response.as_bytes()).await?;
         return Ok(());
@@ -140,10 +163,15 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
 
     // 1. Root / Yggdrasil API metadata
     if path == "/" || path == "/api/yggdrasil" || path == "/api/yggdrasil/" {
-        let body = format!(
-            r#"{{"meta":{{"serverName":"OneLauncher-Cracked","implementationName":"onelauncher-skin-server","implementationVersion":"{}"}},"skinDomains":["127.0.0.1","localhost"]}}"#,
-            env!("CARGO_PKG_VERSION")
-        );
+        let body = serde_json::json!({
+            "meta": {
+                "serverName": "OneLauncher-Cracked",
+                "implementationName": "onelauncher-skin-server",
+                "implementationVersion": env!("CARGO_PKG_VERSION")
+            },
+            "skinDomains": ["127.0.0.1", "localhost"],
+            "signaturePublickey": SKIN_SERVER_PUBLIC_KEY
+        }).to_string();
         let header = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
@@ -153,8 +181,52 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
         return Ok(());
     }
 
-    // 2. Profile request: /session/minecraft/profile/<uuid>
-    if let Some(uuid_raw) = path.strip_prefix("/session/minecraft/profile/") {
+    // 2. Public keys endpoint (for Minecraft 1.19+ profile signature verification)
+    if path == "/publickeys" || path == "/minecraftservices/publickeys" {
+        let key_b64 = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2ZEWcf6IB84Atm2pnE/Na19ipdSUpXjMYWaloNhP5ygsMB63i1T55RxaMeVoX/CLY1cFI14+BqgeHGYHOLyoVoLz1ylC1QvI99Q1fyl0caTD41K11T5l+EGs5gpepGbQ11tRhtTFNpZg016W83t9QMMqpVzSETfK65bu5jOeipvf9TAlXNCpRPZBXe12+kJ5H1t3H9NT2KMUpcYPER7pIeIMOgiUwCCBqlXVhoKqjTvplKmyaY/qP3zBdLDQ/+mA1i9SOM8529vi452g+ftPkUK+AP52KBb4MnmrwasnH9JdzmS8t2Kl17HYORZ6RpHAPlF4DEC7QDEhvJRLvf1NbQIDAQAB";
+        let body = serde_json::json!({
+            "profilePropertyKeys": [{"publicKey": key_b64}],
+            "playerCertificateKeys": [{"publicKey": key_b64}]
+        }).to_string();
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(header.as_bytes()).await?;
+        return Ok(());
+    }
+
+    // 3. Profiles by names endpoint (bulk profile lookup)
+    if path == "/api/profiles/minecraft" || path == "/api/profiles/minecraft/" {
+        let mut profiles = Vec::new();
+        if let Some(accounts) = REGISTERED_ACCOUNTS.get() {
+            let read = accounts.read();
+            for reg in read.values() {
+                if !profiles.iter().any(|p: &serde_json::Value| p["id"] == reg.undashed_uuid) {
+                    profiles.push(serde_json::json!({
+                        "id": reg.undashed_uuid,
+                        "name": reg.username,
+                    }));
+                }
+            }
+        }
+        let body = serde_json::to_string(&profiles).unwrap_or_else(|_| "[]".to_string());
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(header.as_bytes()).await?;
+        return Ok(());
+    }
+
+    // 4. Profile request: /sessionserver/session/minecraft/profile/<uuid> or /session/minecraft/profile/<uuid>
+    let profile_uuid = path
+        .strip_prefix("/sessionserver/session/minecraft/profile/")
+        .or_else(|| path.strip_prefix("/session/minecraft/profile/"));
+
+    if let Some(uuid_raw) = profile_uuid {
         let uuid_str = uuid_raw.trim_matches('/');
 
         // Check if this is one of our local accounts with a custom skin
@@ -185,7 +257,7 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
         return Ok(());
     }
 
-    // 3. Texture request: /textures/<id>.png
+    // 5. Texture request: /textures/<id>.png
     if let Some(texture_raw) = path.strip_prefix("/textures/") {
         let texture_id = texture_raw.trim_matches('/').trim_end_matches(".png");
         if let Some(png_bytes) = load_skin_png(texture_id).await {
@@ -328,11 +400,69 @@ async fn build_profile_response(uuid_input: &str, port: u16) -> Option<String> {
     let encoded_textures =
         base64::engine::general_purpose::STANDARD.encode(texture_payload.as_bytes());
 
-    let profile_json = format!(
-        r#"{{"id":"{undashed}","name":"{username}","properties":[{{"name":"textures","value":"{encoded_textures}"}}]}}"#
-    );
+    let profile_json = if let Some(sig) = sign_sha1_with_rsa(encoded_textures.as_bytes()) {
+        format!(
+            r#"{{"id":"{undashed}","name":"{username}","properties":[{{"name":"textures","value":"{encoded_textures}","signature":"{sig}"}}]}}"#
+        )
+    } else {
+        format!(
+            r#"{{"id":"{undashed}","name":"{username}","properties":[{{"name":"textures","value":"{encoded_textures}"}}]}}"#
+        )
+    };
 
     Some(profile_json)
+}
+
+/// Builds the `--userProperties` JSON map for launch arguments with signed textures.
+pub async fn build_user_properties(uuid_input: &str, port: u16) -> Option<String> {
+    let dashed = to_dashed_uuid(uuid_input);
+    let undashed = to_undashed_uuid(uuid_input);
+
+    let _skin_path = find_skin_path(uuid_input).await?;
+
+    let is_slim = if let Ok(meta_p) = skin_meta_path(&dashed) {
+        if meta_p.exists() {
+            polyio::read_to_string(&meta_p)
+                .await
+                .ok()
+                .and_then(|s| serde_json::from_str::<SkinMetadata>(&s).ok())
+                .map(|m| m.is_slim)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    let username = resolve_username(uuid_input).await;
+    let skin_url = format!("http://127.0.0.1:{port}/textures/{undashed}.png");
+
+    let model_json = if is_slim {
+        r#","metadata":{"model":"slim"}"#
+    } else {
+        ""
+    };
+
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let texture_payload = format!(
+        r#"{{"timestamp":{timestamp},"profileId":"{undashed}","profileName":"{username}","textures":{{"SKIN":{{"url":"{skin_url}"{model_json}}}}}}}"#
+    );
+
+    let encoded_textures =
+        base64::engine::general_purpose::STANDARD.encode(texture_payload.as_bytes());
+
+    let prop_json = if let Some(sig) = sign_sha1_with_rsa(encoded_textures.as_bytes()) {
+        format!(
+            r#"{{"textures":[{{"name":"textures","value":"{encoded_textures}","signature":"{sig}"}}]}}"#
+        )
+    } else {
+        format!(
+            r#"{{"textures":[{{"name":"textures","value":"{encoded_textures}"}}]}}"#
+        )
+    };
+
+    Some(prop_json)
 }
 
 async fn fetch_mojang_profile(uuid_str: &str) -> Option<String> {
@@ -360,7 +490,10 @@ async fn fetch_mojang_profile(uuid_str: &str) -> Option<String> {
         "https://sessionserver.mojang.com/session/minecraft/profile/{undashed}?unsigned=false"
     );
     let result = match client.get(&url).send().await {
-        Ok(res) if res.status().is_success() => res.text().await.ok(),
+        Ok(res) if res.status() == reqwest::StatusCode::OK => match res.text().await {
+            Ok(text) if !text.trim().is_empty() => Some(text),
+            _ => None,
+        },
         _ => None,
     };
 
@@ -564,5 +697,88 @@ mod tests {
         assert!(jar_path.exists());
         let meta = tokio::fs::metadata(&jar_path).await.unwrap();
         assert!(meta.len() > 100_000);
+    }
+
+    #[test]
+    fn test_sign_sha1_with_rsa() {
+        let sig = sign_sha1_with_rsa(b"hello world test");
+        assert!(sig.is_some());
+        let sig_str = sig.unwrap();
+        assert!(!sig_str.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_skin_server_http_endpoints() {
+        let port = ensure_skin_server().await.expect("skin server starts");
+        let client = reqwest::Client::new();
+
+        // 1. Test GET /
+        let res = client
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .expect("GET / succeeds");
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+        let root_json: serde_json::Value = res.json().await.expect("valid JSON");
+        assert!(root_json.get("signaturePublickey").is_some());
+        assert!(root_json.get("skinDomains").is_some());
+
+        // 2. Test GET /publickeys
+        let res = client
+            .get(format!("http://127.0.0.1:{port}/publickeys"))
+            .send()
+            .await
+            .expect("GET /publickeys succeeds");
+        assert_eq!(res.status(), reqwest::StatusCode::OK);
+        let pk_json: serde_json::Value = res.json().await.expect("valid JSON");
+        assert!(pk_json.get("profilePropertyKeys").is_some());
+
+        // 3. Test GET /sessionserver/session/minecraft/profile/<unknown_uuid>
+        // Unknown player must return 204 No Content so other multiplayer players never get user skin!
+        let res = client
+            .get(format!("http://127.0.0.1:{port}/sessionserver/session/minecraft/profile/00000000000000000000000000000000"))
+            .send()
+            .await
+            .expect("GET profile succeeds");
+        assert_eq!(res.status(), reqwest::StatusCode::NO_CONTENT);
+
+        // 4. Test registered user with a skin
+        let test_uuid = "12345678-1234-1234-1234-123456789abc";
+        let test_undashed = "12345678123412341234123456789abc";
+        let test_user = "TestPlayer";
+        register_launch_account(test_uuid, test_user);
+
+        if let Ok(dir) = skins_dir() {
+            let _ = polyio::create_dir_all(&dir).await;
+            let skin_p = dir.join(format!("{test_uuid}.png"));
+            // 1x1 png or dummy png
+            let dummy_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82";
+            let _ = polyio::write(&skin_p, dummy_png).await;
+
+            let res = client
+                .get(format!("http://127.0.0.1:{port}/sessionserver/session/minecraft/profile/{test_undashed}"))
+                .send()
+                .await
+                .expect("GET registered profile succeeds");
+            assert_eq!(res.status(), reqwest::StatusCode::OK);
+            let prof: serde_json::Value = res.json().await.expect("valid profile JSON");
+            assert_eq!(prof["name"], test_user);
+            let props = prof["properties"].as_array().expect("properties array");
+            assert!(!props.is_empty());
+            assert_eq!(props[0]["name"], "textures");
+            assert!(props[0]["value"].as_str().is_some());
+            assert!(props[0]["signature"].as_str().is_some());
+
+            // Test GET /textures/<undashed>.png
+            let res = client
+                .get(format!("http://127.0.0.1:{port}/textures/{test_undashed}.png"))
+                .send()
+                .await
+                .expect("GET texture succeeds");
+            assert_eq!(res.status(), reqwest::StatusCode::OK);
+            assert_eq!(res.headers()["content-type"], "image/png");
+
+            let _ = polyio::remove_file(&skin_p).await;
+        }
     }
 }

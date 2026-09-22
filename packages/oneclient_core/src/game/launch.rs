@@ -316,6 +316,8 @@ async fn start(
     // Always clean up legacy jar patches and resource packs to ensure clean vanilla state
     crate::game::skin_server::cleanup_legacy_skin_injection(&cwd, &client_jar).await;
 
+    let mut offline_skin_port = None;
+
     // Attach proper Authlib-Injector offline skin system if running an offline account
     if account.is_offline() {
         let account_uuid_str = account.id.to_string();
@@ -325,6 +327,7 @@ async fn start(
         if let Ok(port) = crate::game::skin_server::ensure_skin_server().await
             && let Ok(injector_jar) = crate::game::skin_server::prepare_authlib_injector().await
         {
+            offline_skin_port = Some(port);
             let agent_arg = format!(
                 "-javaagent:{}=http://127.0.0.1:{port}",
                 injector_jar.display()
@@ -355,6 +358,19 @@ async fn start(
         profile.resolution.unwrap_or_default(),
         &java.os_arch,
     )?;
+
+    if account.is_offline()
+        && let Some(port) = offline_skin_port
+        && let Some(user_props) =
+            crate::game::skin_server::build_user_properties(&account.id.to_string(), port).await
+    {
+        for i in 0..mc_args.len() {
+            if mc_args[i] == "--userProperties" && i + 1 < mc_args.len() && mc_args[i + 1] == "{}" {
+                mc_args[i + 1] = user_props;
+                break;
+            }
+        }
+    }
     arguments::append_profile_game_arguments(&mut mc_args, profile.force_fullscreen, None);
 
     if let Some(reason) = run_hook(profile.hook_pre.as_deref(), &cwd).await {
