@@ -19,6 +19,7 @@ type MojangCacheEntry = (Option<String>, Instant);
 type MojangCacheMap = HashMap<String, MojangCacheEntry>;
 
 static AUTHLIB_INJECTOR_BYTES: &[u8] = include_bytes!("../../assets/authlib-injector.jar");
+static OFFLINE_SKINS_MOD_BYTES: &[u8] = include_bytes!("../../assets/offlineskins-fabric.jar");
 static SKIN_SERVER_PORT: OnceLock<u16> = OnceLock::new();
 static REGISTERED_ACCOUNTS: OnceLock<RwLock<HashMap<String, AccountRegistration>>> = OnceLock::new();
 static MOJANG_CACHE: OnceLock<RwLock<MojangCacheMap>> = OnceLock::new();
@@ -98,6 +99,34 @@ pub async fn prepare_authlib_injector() -> Result<PathBuf, String> {
     Ok(jar_path)
 }
 
+/// Ensures the offline skins Fabric mod is extracted to disk from embedded bytes.
+pub async fn prepare_offline_skins_mod() -> Result<PathBuf, String> {
+    let metadata = oneclient_common::paths::data_dir()
+        .map_err(|e| e.to_string())?
+        .join("metadata");
+    let mod_path = metadata.join("offlineskins-fabric.jar");
+
+    let is_valid = if let Ok(meta) = tokio::fs::metadata(&mod_path).await {
+        meta.len() > 100_000
+    } else {
+        false
+    };
+
+    if !is_valid {
+        if let Some(parent) = mod_path.parent() {
+            polyio::create_dir_all(parent)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        polyio::write(&mod_path, OFFLINE_SKINS_MOD_BYTES)
+            .await
+            .map_err(|e| e.to_string())?;
+        tracing::info!(path = %mod_path.display(), "extracted embedded offlineskins mod jar");
+    }
+
+    Ok(mod_path)
+}
+
 /// Starts the local skin server on a random local port if not already started.
 pub async fn ensure_skin_server() -> Result<u16, String> {
     if let Some(&port) = SKIN_SERVER_PORT.get() {
@@ -152,6 +181,8 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let uri = parts.next().unwrap_or("");
+
+    tracing::info!(method, uri, "skin_server incoming request");
 
     if method != "GET" && method != "HEAD" && method != "POST" {
         let response = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -279,7 +310,7 @@ async fn handle_connection(mut stream: TcpStream, port: u16) -> Result<(), std::
 }
 
 pub fn to_dashed_uuid(s: &str) -> String {
-    let clean = s.replace('-', "");
+    let clean = s.replace('-', "").to_lowercase();
     if clean.len() == 32 {
         format!(
             "{}-{}-{}-{}-{}",
@@ -290,12 +321,12 @@ pub fn to_dashed_uuid(s: &str) -> String {
             &clean[20..32]
         )
     } else {
-        s.to_string()
+        s.to_lowercase()
     }
 }
 
 pub fn to_undashed_uuid(s: &str) -> String {
-    s.replace('-', "")
+    s.replace('-', "").to_lowercase()
 }
 
 async fn find_skin_path(uuid_or_name: &str) -> Option<PathBuf> {
@@ -316,6 +347,32 @@ async fn find_skin_path(uuid_or_name: &str) -> Option<PathBuf> {
         && p.exists()
     {
         return Some(p);
+    }
+
+    if let Some(accounts) = REGISTERED_ACCOUNTS.get() {
+        let read = accounts.read();
+        if let Some(reg) = read
+            .get(&dashed)
+            .or_else(|| read.get(&undashed))
+            .or_else(|| read.get(&uuid_or_name.to_lowercase()))
+        {
+            if let Ok(p) = skin_file_path(&reg.uuid)
+                && p.exists()
+            {
+                return Some(p);
+            }
+            if let Ok(p) = skin_file_path(&reg.undashed_uuid)
+                && p.exists()
+            {
+                return Some(p);
+            }
+            if let Ok(dir) = skins_dir() {
+                let name_path = dir.join(format!("{}.png", reg.username));
+                if name_path.exists() {
+                    return Some(name_path);
+                }
+            }
+        }
     }
 
     if let Ok(dir) = skins_dir() {
@@ -351,7 +408,7 @@ async fn resolve_username(uuid_input: &str) -> String {
         && let Some(users) = val.get("users").and_then(|u| u.as_object())
     {
         for (id, user) in users {
-            if (id == &dashed || id.replace('-', "") == undashed)
+            if (id == &dashed || id.replace('-', "").to_lowercase() == undashed)
                 && let Some(name) = user.get("username").and_then(|n| n.as_str())
             {
                 return name.to_string();
@@ -362,27 +419,27 @@ async fn resolve_username(uuid_input: &str) -> String {
     "Player".to_string()
 }
 
+async fn read_skin_metadata(uuid_or_name: &str) -> bool {
+    let dashed = to_dashed_uuid(uuid_or_name);
+    let undashed = to_undashed_uuid(uuid_or_name);
+    let lower = uuid_or_name.to_lowercase();
+    for key in [&dashed, &undashed, &lower] {
+        if let Ok(meta_p) = skin_meta_path(key)
+            && meta_p.exists()
+            && let Ok(s) = polyio::read_to_string(&meta_p).await
+            && let Ok(m) = serde_json::from_str::<SkinMetadata>(&s)
+        {
+            return m.is_slim;
+        }
+    }
+    false
+}
+
 async fn build_profile_response(uuid_input: &str, port: u16) -> Option<String> {
-    let dashed = to_dashed_uuid(uuid_input);
     let undashed = to_undashed_uuid(uuid_input);
 
     let _skin_path = find_skin_path(uuid_input).await?;
-
-    let is_slim = if let Ok(meta_p) = skin_meta_path(&dashed) {
-        if meta_p.exists() {
-            polyio::read_to_string(&meta_p)
-                .await
-                .ok()
-                .and_then(|s| serde_json::from_str::<SkinMetadata>(&s).ok())
-                .map(|m| m.is_slim)
-                .unwrap_or(false)
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
+    let is_slim = read_skin_metadata(uuid_input).await;
     let username = resolve_username(uuid_input).await;
     let skin_url = format!("http://127.0.0.1:{port}/textures/{undashed}.png");
 
@@ -410,31 +467,43 @@ async fn build_profile_response(uuid_input: &str, port: u16) -> Option<String> {
         )
     };
 
+    tracing::info!(uuid = %uuid_input, username = %username, is_slim, "built profile response with signed skin");
     Some(profile_json)
+}
+
+/// Disables mods like `secureskins` and `customskinloader` that interfere with offline skin support or cause startup crashes.
+pub async fn disable_incompatible_offline_mods(dirs: &[PathBuf]) {
+    for dir in dirs {
+        if let Ok(mut entries) = tokio::fs::read_dir(dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let lower = name.to_lowercase();
+                if (lower.contains("secureskins") || lower.contains("customskinloader")) && name.ends_with(".jar") {
+                    let path = entry.path();
+                    let disabled = path.with_extension("jar.disabled");
+                    tracing::info!(path = %path.display(), "disabling incompatible offline skin mod");
+                    let _ = tokio::fs::remove_file(&disabled).await;
+                    let _ = tokio::fs::rename(&path, &disabled).await;
+                }
+            }
+        }
+    }
+
+    // Clean up residual CustomSkinLoader core jars that break modern Fabric / Sponge Mixin
+    if let Ok(shared) = shared_minecraft_dir() {
+        let csl_core = shared.join("CustomSkinLoader").join("Core");
+        if csl_core.exists() {
+            let _ = tokio::fs::remove_dir_all(&csl_core).await;
+        }
+    }
 }
 
 /// Builds the `--userProperties` JSON map for launch arguments with signed textures.
 pub async fn build_user_properties(uuid_input: &str, port: u16) -> Option<String> {
-    let dashed = to_dashed_uuid(uuid_input);
     let undashed = to_undashed_uuid(uuid_input);
 
     let _skin_path = find_skin_path(uuid_input).await?;
-
-    let is_slim = if let Ok(meta_p) = skin_meta_path(&dashed) {
-        if meta_p.exists() {
-            polyio::read_to_string(&meta_p)
-                .await
-                .ok()
-                .and_then(|s| serde_json::from_str::<SkinMetadata>(&s).ok())
-                .map(|m| m.is_slim)
-                .unwrap_or(false)
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
+    let is_slim = read_skin_metadata(uuid_input).await;
     let username = resolve_username(uuid_input).await;
     let skin_url = format!("http://127.0.0.1:{port}/textures/{undashed}.png");
 
@@ -503,19 +572,20 @@ async fn fetch_mojang_profile(uuid_str: &str) -> Option<String> {
     result
 }
 
-/// Synchronizes custom skin to various mod directory layouts (CustomSkinLoader, OfflineSkins, etc.)
+/// Synchronizes custom skin to mod directory layouts (OfflineSkins, etc.)
 pub async fn sync_offline_skins(
     game_dir: &Path,
     account_uuid: &str,
     account_username: &str,
 ) {
     if let Some(png_bytes) = load_skin_png(account_uuid).await {
+        let undashed = to_undashed_uuid(account_uuid);
         let targets = [
-            game_dir.join("CustomSkinLoader").join("skins").join(format!("{account_username}.png")),
-            game_dir.join("CustomSkinLoader").join("skins").join(format!("{account_uuid}.png")),
+            game_dir.join("cachedImages").join("skins").join(format!("{account_username}.png")),
+            game_dir.join("cachedImages").join("skins").join("uuid").join(format!("{account_uuid}.png")),
+            game_dir.join("cachedImages").join("skins").join("uuid").join(format!("{undashed}.png")),
             game_dir.join("config").join("offlineskins").join(format!("{account_username}.png")),
             game_dir.join("config").join("offlineskins").join(format!("{account_uuid}.png")),
-            game_dir.join("cachedImages").join("skins").join(format!("{account_uuid}.png")),
         ];
 
         for target in targets {
@@ -529,8 +599,11 @@ pub async fn sync_offline_skins(
             && shared != game_dir
         {
             let shared_targets = [
-                shared.join("CustomSkinLoader").join("skins").join(format!("{account_username}.png")),
+                shared.join("cachedImages").join("skins").join(format!("{account_username}.png")),
+                shared.join("cachedImages").join("skins").join("uuid").join(format!("{account_uuid}.png")),
+                shared.join("cachedImages").join("skins").join("uuid").join(format!("{undashed}.png")),
                 shared.join("config").join("offlineskins").join(format!("{account_username}.png")),
+                shared.join("config").join("offlineskins").join(format!("{account_uuid}.png")),
             ];
             for target in shared_targets {
                 if let Some(parent) = target.parent() {
@@ -548,19 +621,27 @@ pub async fn write_custom_skin_loader_config(csl_dir: &Path) {
     let config_path = csl_dir.join("CustomSkinLoader.json");
     let content = r#"{
   "version": "14.14",
+  "enableTransparentSkin": true,
   "loadlist": [
     {
       "name": "LocalSkin",
-      "type": "CustomSkinLoader",
-      "root": "CustomSkinLoader/skins/{USERNAME}.png"
+      "type": "Legacy",
+      "skin": "LocalSkin/skins/{USERNAME}.png",
+      "cape": "LocalSkin/capes/{USERNAME}.png",
+      "elytra": "LocalSkin/elytras/{USERNAME}.png",
+      "model": "auto"
+    },
+    {
+      "name": "LocalSkinRoot",
+      "type": "Legacy",
+      "skin": "skins/{USERNAME}.png",
+      "cape": "capes/{USERNAME}.png",
+      "elytra": "elytras/{USERNAME}.png",
+      "model": "auto"
     },
     {
       "name": "Mojang",
       "type": "Mojang"
-    },
-    {
-      "name": "Ely.by",
-      "type": "ElyBy"
     },
     {
       "name": "SkinRestorer",

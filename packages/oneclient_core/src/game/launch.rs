@@ -267,6 +267,20 @@ async fn start(
         tracing::warn!(cluster_id, error = %err, "failed to materialize cluster content");
     }
 
+    let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
+
+    if account.is_offline() {
+        crate::game::skin_server::disable_incompatible_offline_mods(&[mods_dir.clone(), cwd.join("mods")]).await;
+        if cluster.mc_loader == oneclient_common::domain::GameLoader::Fabric {
+            if let Ok(mod_jar) = crate::game::skin_server::prepare_offline_skins_mod().await {
+                let target_mod = mods_dir.join("offlineskins-fabric.jar");
+                if !target_mod.exists() {
+                    let _ = polyio::copy(&mod_jar, &target_mod).await;
+                }
+            }
+        }
+    }
+
     if !dedicated {
         crate::game::link_cluster_logs(&cluster, &cwd).await;
     }
@@ -302,7 +316,6 @@ async fn start(
         java.major,
     )?;
 
-    let mods_dir = paths::cluster_mods_dir(&cluster.folder_name)?;
     if let Some(arg) = crate::game::mods_folder_argument(
         cluster.mc_loader,
         loader_version_id,
@@ -323,6 +336,11 @@ async fn start(
         let account_uuid_str = account.id.to_string();
         crate::game::skin_server::register_launch_account(&account_uuid_str, &account.username);
         crate::game::skin_server::sync_offline_skins(&cwd, &account_uuid_str, &account.username).await;
+        if let Some(parent) = mods_dir.parent()
+            && parent != cwd
+        {
+            crate::game::skin_server::sync_offline_skins(parent, &account_uuid_str, &account.username).await;
+        }
 
         if let Ok(port) = crate::game::skin_server::ensure_skin_server().await
             && let Ok(injector_jar) = crate::game::skin_server::prepare_authlib_injector().await
@@ -334,13 +352,9 @@ async fn start(
             );
             tracing::info!(%agent_arg, "attaching authlib-injector for proper offline skin support");
             jvm_args.push(agent_arg);
-            jvm_args.push("-Dauthlibinjector.ignoredPackages=org.polyfrost".to_string());
             jvm_args.push("-Dauthlibinjector.noShowServerName=true".to_string());
             jvm_args.push("-Dauthlibinjector.noLogFile=true".to_string());
         }
-
-        crate::game::skin_server::write_custom_skin_loader_config(&cwd.join("CustomSkinLoader")).await;
-        crate::game::skin_server::write_custom_skin_loader_config(&cwd.join("config").join("CustomSkinLoader")).await;
     }
 
     let mut mc_args = arguments::minecraft_arguments(

@@ -220,22 +220,32 @@ pub async fn delete_account_skin(uuid: &str, username: Option<&str>) -> Result<(
 
 async fn sync_custom_skin_loader(username: &str, skin_png: &[u8]) -> Result<(), String> {
     if let Ok(mc_dir) = shared_minecraft_dir() {
-        let csl_skins_dir = mc_dir.join("CustomSkinLoader").join("skins");
-        let _ = polyio::create_dir_all(&csl_skins_dir).await;
-        let target = csl_skins_dir.join(format!("{username}.png"));
-        let _ = polyio::write(&target, skin_png).await;
+        let cached_dir = mc_dir.join("cachedImages").join("skins");
+        let _ = polyio::create_dir_all(&cached_dir).await;
+        let _ = polyio::write(&cached_dir.join(format!("{username}.png")), skin_png).await;
+
+        let cfg_dir = mc_dir.join("config").join("offlineskins");
+        let _ = polyio::create_dir_all(&cfg_dir).await;
+        let _ = polyio::write(&cfg_dir.join(format!("{username}.png")), skin_png).await;
     }
     Ok(())
 }
 
 async fn remove_custom_skin_loader(username: &str) -> Result<(), String> {
     if let Ok(mc_dir) = shared_minecraft_dir() {
-        let target = mc_dir
-            .join("CustomSkinLoader")
+        let target1 = mc_dir
+            .join("cachedImages")
             .join("skins")
             .join(format!("{username}.png"));
-        if target.exists() {
-            let _ = polyio::remove_file(&target).await;
+        if target1.exists() {
+            let _ = polyio::remove_file(&target1).await;
+        }
+        let target2 = mc_dir
+            .join("config")
+            .join("offlineskins")
+            .join(format!("{username}.png"));
+        if target2.exists() {
+            let _ = polyio::remove_file(&target2).await;
         }
     }
     Ok(())
