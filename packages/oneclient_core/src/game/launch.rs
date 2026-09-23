@@ -271,7 +271,9 @@ async fn start(
 
     if account.is_offline() {
         crate::game::skin_server::disable_incompatible_offline_mods(&[mods_dir.clone(), cwd.join("mods")]).await;
-        if cluster.mc_loader == oneclient_common::domain::GameLoader::Fabric {
+        if cluster.mc_loader == oneclient_common::domain::GameLoader::Fabric
+            && mc_version == "1.21.11"
+        {
             if let Ok(mod_jar) = crate::game::skin_server::prepare_offline_skins_mod().await {
                 let target_mod = mods_dir.join("offlineskins-fabric.jar");
                 if !target_mod.exists() {
